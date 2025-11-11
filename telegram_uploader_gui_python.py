@@ -247,12 +247,23 @@ class UploadWorker(threading.Thread):
         a channel link if enabled in the UI.
         """
         try:
+            # Determine base caption
             if self.use_custom_caption and self.custom_caption:
                 base = self.custom_caption.strip()
             else:
-                base = self.folder.name.strip() if isinstance(self.folder, Path) else ''
-                if not base:
-                    base = file_path.name
+                # Be robust whether self.folder is a Path or string
+                try:
+                    folder_name = Path(self.folder).name.strip() if self.folder else ''  # type: ignore[arg-type]
+                except Exception:
+                    folder_name = ''
+                # Fallbacks: parent folder of file, then file stem
+                if folder_name:
+                    base = folder_name
+                else:
+                    try:
+                        base = file_path.parent.name.strip() or file_path.stem
+                    except Exception:
+                        base = file_path.name
             if self.include_link and self.channel_link:
                 cap = f"Instagram ID : {base}\n{self.channel_link}"
                 # Keep within Telegram's typical 1024-char caption limit for media
@@ -1835,15 +1846,15 @@ if __name__ == '__main__':
         )
         headless_log('Starting upload (headless)...')
         worker.start()
-        # Wait for completion
+        # Wait for completion using join to ensure clean exit
         try:
             while worker.is_alive():
-                time.sleep(0.2)
+                worker.join(timeout=0.25)
         except KeyboardInterrupt:
             stop_event.set()
             headless_log('Stop requested (KeyboardInterrupt). Waiting for worker to finish...')
             while worker.is_alive():
-                time.sleep(0.2)
+                worker.join(timeout=0.25)
         sys.exit(0)
     else:
         app = App()

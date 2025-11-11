@@ -24,6 +24,8 @@ final class UploadController: ObservableObject {
     @Published var folderPath: String = ""
     @Published var token: String = ""
     @Published var channel: String = ""
+    @Published var captionLink: String = ""
+    @Published var includeLink: Bool = true
     @Published var logLines: [String] = []
     @Published var isRunning: Bool = false
     @Published var progress: Double = 0.0
@@ -32,6 +34,17 @@ final class UploadController: ObservableObject {
     @Published var savedTokens: [String] = []
     @Published var savedChannels: [String] = []
     @Published var status: UploadStatus = .idle
+    // Advanced options for headless mode
+    @Published var asDocument: Bool = false
+    @Published var noAlbum: Bool = false
+    @Published var delay: Double = 1.0
+    @Published var jitter: Double = 0.4
+    @Published var resume: Bool = false
+    @Published var moveAfter: Bool = false
+    @Published var workers: Int = 3
+    @Published var skipValidate: Bool = false
+    @Published var useCustomCaption: Bool = false
+    @Published var customCaption: String = ""
 
     private let tokensStoreURL: URL = {
         let p = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".telegram_uploader_tokens.json")
@@ -39,8 +52,8 @@ final class UploadController: ObservableObject {
     }()
 
     private var process: Process?
-    private var stdoutPipe = Pipe()
-    private var stderrPipe = Pipe()
+    private var stdoutPipe: Pipe?
+    private var stderrPipe: Pipe?
 
     init() {
         loadTokenStore()
@@ -113,16 +126,46 @@ final class UploadController: ObservableObject {
 
     func launchPythonGUI() {
         // Launch original Tkinter GUI (embedded script) for full feature set.
-        runPython(withArgs: [])
+        // Preflight: ensure selected Python has Tk available to avoid silent failure.
+        let python = resolvePythonExecutable()
+        if !ensureTkAvailable(python: python) {
+            appendLog("❌ Tkinter not available in selected Python. Install Python with Tk (e.g., from python.org), or use headless mode.")
+        }
+        runPython(withArgs: [], preferredPython: python)
     }
 
     func startUploadHeadless() {
-        // Provide minimal headless invocation of python script; script already has GUI.
-        // Could be extended to add CLI flags; currently just launches GUI for simplicity.
-        runPython(withArgs: ["--folder", folderPath, "--token", token, "--channel", channel])
+        // Headless invocation of python script with CLI flags.
+        // Expand ~ if user picked a home-relative folder; if empty, attempt failing fast.
+        let expandedFolder: String = {
+            let trimmed = folderPath.trimmingCharacters(in: .whitespacesAndNewlines)
+            if trimmed.hasPrefix("~") { return NSString(string: trimmed).expandingTildeInPath }
+            return trimmed
+        }()
+        var args = ["--folder", expandedFolder, "--token", token, "--channel", channel]
+        let link = captionLink.trimmingCharacters(in: .whitespacesAndNewlines)
+        if includeLink && !link.isEmpty {
+            args += ["--include-link", "--link", link]
+        }
+        if asDocument { args += ["--as-document"] }
+        if noAlbum { args += ["--no-album"] }
+        if resume { args += ["--resume"] }
+        if moveAfter { args += ["--move-after"] }
+        if skipValidate { args += ["--skip-validate"] }
+        if useCustomCaption {
+            args += ["--use-custom-caption"]
+            let cc = customCaption.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !cc.isEmpty { args += ["--custom-caption", cc] }
+        }
+        // numeric flags
+        args += ["--delay", String(format: "%.3f", delay)]
+        args += ["--jitter", String(format: "%.3f", jitter)]
+        args += ["--workers", String(max(1, min(10, workers)))]
+        let python = resolvePythonExecutable()
+        runPython(withArgs: args, preferredPython: python)
     }
 
-    private func runPython(withArgs: [String]) {
+    private func runPython(withArgs: [String], preferredPython: String? = nil) {
         guard !isRunning else { return }
         logLines.removeAll()
         progress = 0
@@ -131,13 +174,16 @@ final class UploadController: ObservableObject {
         let resourcePath = Bundle.main.resourcePath ?? FileManager.default.currentDirectoryPath
         let scriptPath = URL(fileURLWithPath: resourcePath).appendingPathComponent("telegram_uploader_gui_python.py").path
         let task = Process()
-        task.executableURL = URL(fileURLWithPath: "/usr/bin/env")
-        // We'll pass script path; if arguments unsupported by script they will be ignored.
-        task.arguments = ["python3", scriptPath] + withArgs
-        task.standardOutput = stdoutPipe
-        task.standardError = stderrPipe
+        // Resolve a likely Python interpreter (Homebrew, local, then system) unless a preferred one was provided.
+        let python = preferredPython ?? resolvePythonExecutable()
+        task.executableURL = URL(fileURLWithPath: python)
+        task.arguments = [scriptPath] + withArgs
+        let outPipe = Pipe(); let errPipe = Pipe()
+        self.stdoutPipe = outPipe; self.stderrPipe = errPipe
+        task.standardOutput = outPipe
+        task.standardError = errPipe
 
-        stdoutPipe.fileHandleForReading.readabilityHandler = { handle in
+        outPipe.fileHandleForReading.readabilityHandler = { handle in
             let data = handle.availableData
             guard !data.isEmpty, let chunk = String(data: data, encoding: .utf8) else { return }
             // Split by newlines to process multiple events per read
@@ -146,7 +192,7 @@ final class UploadController: ObservableObject {
                 self.handleStdoutLine(line)
             }
         }
-        stderrPipe.fileHandleForReading.readabilityHandler = { handle in
+        errPipe.fileHandleForReading.readabilityHandler = { handle in
             if let line = String(data: handle.availableData, encoding: .utf8), !line.isEmpty {
                 self.appendLog("ERR: " + line.trimmingCharacters(in: .whitespacesAndNewlines))
             }
@@ -164,6 +210,12 @@ final class UploadController: ObservableObject {
                     self.isRunning = false
                     self.appendLog("✅ Python exited status \(task.terminationStatus)")
                     if self.status == .running { self.status = (task.terminationStatus == 0) ? .done : .failed }
+                    // Cleanup for relaunch
+                    self.stdoutPipe?.fileHandleForReading.readabilityHandler = nil
+                    self.stderrPipe?.fileHandleForReading.readabilityHandler = nil
+                    self.stdoutPipe = nil
+                    self.stderrPipe = nil
+                    self.process = nil
                 }
             }
         } catch {
@@ -242,6 +294,35 @@ final class UploadController: ObservableObject {
         if hours > 0 { return "\(hours)h \(minutes)m \(seconds)s" }
         if minutes > 0 { return "\(minutes)m \(seconds)s" }
         return "\(seconds)s"
+    }
+
+    // MARK: - Python/Tk resolution helpers
+    func resolvePythonExecutable() -> String {
+        // Preference order: Homebrew arm64, Homebrew x86, /usr/local, system, then env (handled by caller if needed)
+        let candidates = [
+            "/opt/homebrew/bin/python3",
+            "/usr/local/bin/python3",
+            "/usr/bin/python3"
+        ]
+        for p in candidates {
+            if FileManager.default.isExecutableFile(atPath: p) { return p }
+        }
+        // Fallback to env if nothing else found
+        return "/usr/bin/env/python3"
+    }
+
+    func ensureTkAvailable(python: String) -> Bool {
+        // Best-effort check that tkinter can be imported.
+        let check = Process()
+        check.executableURL = URL(fileURLWithPath: python)
+        check.arguments = ["-c", "import tkinter"]
+        do {
+            try check.run()
+            check.waitUntilExit()
+            return check.terminationStatus == 0
+        } catch {
+            return false
+        }
     }
 }
 
@@ -342,6 +423,39 @@ struct ContentView: View {
                 } label: { Label("Channels", systemImage: "number") }
                 Button("Save") { vm.saveCurrentTokenChannel() }
             }
+            HStack(spacing: 12) {
+                Toggle("Include link in caption", isOn: $vm.includeLink)
+                TextField("Caption Link (optional)", text: $vm.captionLink)
+                    .textFieldStyle(.roundedBorder)
+            }
+            DisclosureGroup("Advanced") {
+                VStack(alignment: .leading, spacing: 10) {
+                    HStack {
+                        Toggle("Send as document", isOn: $vm.asDocument)
+                        Toggle("No album (individual)", isOn: $vm.noAlbum)
+                        Toggle("Resume", isOn: $vm.resume)
+                        Toggle("Move after upload", isOn: $vm.moveAfter)
+                        Toggle("Skip token validate", isOn: $vm.skipValidate)
+                    }
+                    HStack {
+                        Stepper(value: $vm.workers, in: 1...10) { Text("Workers: \(vm.workers)") }
+                        Spacer()
+                        HStack {
+                            Text("Delay")
+                            TextField("1.0", value: $vm.delay, format: .number)
+                                .frame(width: 60)
+                            Text("Jitter")
+                            TextField("0.4", value: $vm.jitter, format: .number)
+                                .frame(width: 60)
+                        }
+                    }
+                    HStack {
+                        Toggle("Use custom caption", isOn: $vm.useCustomCaption)
+                        TextField("Custom caption", text: $vm.customCaption)
+                            .textFieldStyle(.roundedBorder)
+                    }
+                }.padding(.top, 6)
+            }
         }
     }
 
@@ -390,9 +504,6 @@ struct ContentView: View {
                     // TimelineView drives smooth auto-scroll when new lines arrive
                     TimelineView(.animation) { _ in
                         Color.clear.onAppear { lastLogCount = vm.logLines.count }
-                            .onChange(of: vm.logLines.count) { _ in
-                                // Fallback if timeline missed the change
-                            }
                             .task {
                                 // Diff detection: if count advanced, animate scroll
                                 if vm.logLines.count != lastLogCount && vm.logLines.count > 0 {
