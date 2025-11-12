@@ -6,6 +6,8 @@
 import SwiftUI
 import AppKit
 
+// Remove any top-level executable statements; keep only declarations.
+
 // MARK: - Glass Background using NSVisualEffectView
 struct GlassBackground: NSViewRepresentable {
     let material: NSVisualEffectView.Material
@@ -22,6 +24,7 @@ struct GlassBackground: NSViewRepresentable {
 // MARK: - Upload Controller
 final class UploadController: ObservableObject {
     @Published var folderPath: String = ""
+    @Published var folders: [String] = []
     @Published var token: String = ""
     @Published var channel: String = ""
     @Published var captionLink: String = ""
@@ -32,7 +35,12 @@ final class UploadController: ObservableObject {
     @Published var total: Double = 1.0
     @Published var etaText: String = "" // computed from python output
     @Published var savedTokens: [String] = []
-    @Published var savedChannels: [String] = []
+    struct ChannelItem: Identifiable, Hashable {
+        let id: String
+        var name: String
+        var displayLabel: String { name.isEmpty ? id : "\(name) — \(id)" }
+    }
+    @Published var savedChannels: [ChannelItem] = []
     @Published var status: UploadStatus = .idle
     // Advanced options for headless mode
     @Published var asDocument: Bool = false
@@ -54,6 +62,7 @@ final class UploadController: ObservableObject {
     private var process: Process?
     private var stdoutPipe: Pipe?
     private var stderrPipe: Pipe?
+    private var folderQueue: [String] = []
 
     init() {
         loadTokenStore()
@@ -86,9 +95,25 @@ final class UploadController: ObservableObject {
             let data = try Data(contentsOf: tokensStoreURL)
             let obj = try JSONSerialization.jsonObject(with: data, options: []) as? [String: Any]
             let tokens = (obj?["tokens"] as? [String] ?? []).filter { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
-            let channels = (obj?["channels"] as? [String] ?? []).filter { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
+            var items: [ChannelItem] = []
+            if let chStrs = obj?["channels"] as? [String] {
+                for s in chStrs {
+                    let trimmed = s.trimmingCharacters(in: .whitespacesAndNewlines)
+                    guard !trimmed.isEmpty else { continue }
+                    items.append(ChannelItem(id: trimmed, name: ""))
+                }
+            } else if let chObjs = obj?["channels"] as? [[String: Any]] {
+                var seen: Set<String> = []
+                for o in chObjs {
+                    let cid = (o["id"] as? String ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+                    guard !cid.isEmpty, !seen.contains(cid) else { continue }
+                    seen.insert(cid)
+                    let cname = (o["name"] as? String ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+                    items.append(ChannelItem(id: cid, name: cname))
+                }
+            }
             self.savedTokens = Array(NSOrderedSet(array: tokens)) as? [String] ?? []
-            self.savedChannels = Array(NSOrderedSet(array: channels)) as? [String] ?? []
+            self.savedChannels = items
         } catch {
             // no store yet; ignore
         }
@@ -97,13 +122,21 @@ final class UploadController: ObservableObject {
     func saveCurrentTokenChannel() {
         let t = token.trimmingCharacters(in: .whitespacesAndNewlines)
         let c = channel.trimmingCharacters(in: .whitespacesAndNewlines)
+        // Use custom caption field temporarily as channel friendly name if user enabled custom caption? Better separate.
+        // Introduce transient friendly name text field bound via @Published.
+        let cname = channelFriendlyName.trimmingCharacters(in: .whitespacesAndNewlines)
         if !t.isEmpty && !savedTokens.contains(t) {
             savedTokens.insert(t, at: 0)
         }
-        if !c.isEmpty && !savedChannels.contains(c) {
-            savedChannels.insert(c, at: 0)
+        if !c.isEmpty {
+            if let idx = savedChannels.firstIndex(where: { $0.id == c }) {
+                savedChannels[idx].name = cname
+            } else {
+                savedChannels.insert(ChannelItem(id: c, name: cname), at: 0)
+            }
         }
-        let payload: [String: Any] = ["tokens": Array(savedTokens.prefix(50)), "channels": Array(savedChannels.prefix(50))]
+        let chPayload = savedChannels.prefix(50).map { ["id": $0.id, "name": $0.name] }
+        let payload: [String: Any] = ["tokens": Array(savedTokens.prefix(50)), "channels": chPayload]
         do {
             let data = try JSONSerialization.data(withJSONObject: payload, options: [.prettyPrinted])
             try data.write(to: tokensStoreURL)
@@ -113,14 +146,21 @@ final class UploadController: ObservableObject {
         }
     }
 
+    // Friendly name editing buffer
+    @Published var channelFriendlyName: String = ""
+
     func chooseFolder() {
         let panel = NSOpenPanel()
         panel.canChooseFiles = false
         panel.canChooseDirectories = true
-        panel.allowsMultipleSelection = false
+        panel.allowsMultipleSelection = true
         panel.prompt = "Select"
-        if panel.runModal() == .OK, let url = panel.url {
-            folderPath = url.path
+        if panel.runModal() == .OK {
+            if let url = panel.urls.first { folderPath = url.path }
+            // merge unique
+            let selected = panel.urls.map { $0.path }
+            let merged = Array(NSOrderedSet(array: folders + selected)) as? [String] ?? (folders + selected)
+            folders = merged
         }
     }
 
@@ -136,48 +176,45 @@ final class UploadController: ObservableObject {
 
     func startUploadHeadless() {
         // Headless invocation of python script with CLI flags.
-        // Expand ~ if user picked a home-relative folder; if empty, attempt failing fast.
-        let expandedFolder: String = {
-            let trimmed = folderPath.trimmingCharacters(in: .whitespacesAndNewlines)
+        func expand(_ p: String) -> String {
+            let trimmed = p.trimmingCharacters(in: .whitespacesAndNewlines)
             if trimmed.hasPrefix("~") { return NSString(string: trimmed).expandingTildeInPath }
             return trimmed
-        }()
-        var args = ["--folder", expandedFolder, "--token", token, "--channel", channel]
-        let link = captionLink.trimmingCharacters(in: .whitespacesAndNewlines)
-        if includeLink && !link.isEmpty {
-            args += ["--include-link", "--link", link]
         }
-        if asDocument { args += ["--as-document"] }
-        if noAlbum { args += ["--no-album"] }
-        if resume { args += ["--resume"] }
-        if moveAfter { args += ["--move-after"] }
-        if skipValidate { args += ["--skip-validate"] }
-        if useCustomCaption {
-            args += ["--use-custom-caption"]
-            let cc = customCaption.trimmingCharacters(in: .whitespacesAndNewlines)
-            if !cc.isEmpty { args += ["--custom-caption", cc] }
+        var queue: [String] = folders
+        if queue.isEmpty {
+            let single = expand(folderPath)
+            if !single.isEmpty { queue = [single] }
         }
-        // numeric flags
-        args += ["--delay", String(format: "%.3f", delay)]
-        args += ["--jitter", String(format: "%.3f", jitter)]
-        args += ["--workers", String(max(1, min(10, workers)))]
+        guard !queue.isEmpty else {
+            appendLog("⚠️ No folder selected")
+            return
+        }
+        folderQueue = queue.map(expand)
         let python = resolvePythonExecutable()
-        runPython(withArgs: args, preferredPython: python)
+        runNextFolder(preferredPython: python)
     }
 
-    private func runPython(withArgs: [String], preferredPython: String? = nil) {
+    private func runPython(withArgs: [String], preferredPython: String? = nil, clearLogs: Bool = true) {
         guard !isRunning else { return }
-        logLines.removeAll()
+        if clearLogs { logLines.removeAll() }
         progress = 0
         total = 1
         etaText = ""
         let resourcePath = Bundle.main.resourcePath ?? FileManager.default.currentDirectoryPath
         let scriptPath = URL(fileURLWithPath: resourcePath).appendingPathComponent("telegram_uploader_gui_python.py").path
-        let task = Process()
+    let task = Process()
         // Resolve a likely Python interpreter (Homebrew, local, then system) unless a preferred one was provided.
         let python = preferredPython ?? resolvePythonExecutable()
-        task.executableURL = URL(fileURLWithPath: python)
+    task.executableURL = URL(fileURLWithPath: python)
         task.arguments = [scriptPath] + withArgs
+    // Inherit environment and add a few safe defaults
+    var env = ProcessInfo.processInfo.environment
+    env["PYTHONUNBUFFERED"] = "1"
+    env["TK_SILENCE_DEPRECATION"] = "1"
+    // Disable ttkbootstrap inside the bundled app to avoid incompatibilities
+    env["DISABLE_TTKBOOTSTRAP"] = "1"
+    task.environment = env
         let outPipe = Pipe(); let errPipe = Pipe()
         self.stdoutPipe = outPipe; self.stderrPipe = errPipe
         task.standardOutput = outPipe
@@ -216,6 +253,11 @@ final class UploadController: ObservableObject {
                     self.stdoutPipe = nil
                     self.stderrPipe = nil
                     self.process = nil
+                    if task.terminationStatus == 0 {
+                        self.advanceFolderQueue()
+                    } else {
+                        self.folderQueue.removeAll()
+                    }
                 }
             }
         } catch {
@@ -224,11 +266,48 @@ final class UploadController: ObservableObject {
         }
     }
 
+    private func advanceFolderQueue() {
+        if !folderQueue.isEmpty { folderQueue.removeFirst() }
+        guard let next = folderQueue.first else { return }
+        appendLog("➡️ Next folder: \(URL(fileURLWithPath: next).lastPathComponent)")
+        runNextFolder(preferredPython: resolvePythonExecutable())
+    }
+
+    private func buildArgs(for folder: String) -> [String] {
+        var args = ["--folder", folder, "--token", token, "--channel", channel]
+        let link = captionLink.trimmingCharacters(in: .whitespacesAndNewlines)
+        if includeLink && !link.isEmpty {
+            args += ["--include-link", "--link", link]
+        }
+        if asDocument { args += ["--as-document"] }
+        if noAlbum { args += ["--no-album"] }
+        if resume { args += ["--resume"] }
+        if moveAfter { args += ["--move-after"] }
+        if skipValidate { args += ["--skip-validate"] }
+        if useCustomCaption {
+            args += ["--use-custom-caption"]
+            let cc = customCaption.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !cc.isEmpty { args += ["--custom-caption", cc] }
+        }
+        args += ["--delay", String(format: "%.3f", delay)]
+        args += ["--jitter", String(format: "%.3f", jitter)]
+        args += ["--workers", String(max(1, min(10, workers)))]
+        return args
+    }
+
+    private func runNextFolder(preferredPython: String) {
+        guard let current = folderQueue.first else { return }
+        let args = buildArgs(for: current)
+        // Do not clear logs between folders
+        runPython(withArgs: args, preferredPython: preferredPython, clearLogs: folderQueue.count == 1)
+    }
+
     func stop() {
         guard let p = process, isRunning else { return }
         p.terminate()
         appendLog("🛑 Termination requested")
         DispatchQueue.main.async { self.status = .stopping }
+        folderQueue.removeAll()
     }
 
     private func parseProgress(from line: String) {
@@ -298,7 +377,34 @@ final class UploadController: ObservableObject {
 
     // MARK: - Python/Tk resolution helpers
     func resolvePythonExecutable() -> String {
-        // Preference order: Homebrew arm64, Homebrew x86, /usr/local, system, then env (handled by caller if needed)
+        // Small probe to verify a candidate Python actually runs on this CPU
+        func canRun(_ path: String) -> Bool {
+            let p = Process()
+            p.executableURL = URL(fileURLWithPath: path)
+            p.arguments = ["-c", "import sys; print(0)"]
+            do {
+                try p.run()
+                p.waitUntilExit()
+                return p.terminationStatus == 0
+            } catch { return false }
+        }
+
+        // Prefer embedded venv python if present in app bundle Resources (arch-aware via compile-time)
+        if let res = Bundle.main.resourcePath {
+            #if arch(x86_64)
+            let archVenvName = "venv-x86_64"
+            #else
+            let archVenvName = "venv-arm64"
+            #endif
+            let archPath = (res as NSString).appendingPathComponent("\(archVenvName)/bin/python3")
+            if FileManager.default.isExecutableFile(atPath: archPath), canRun(archPath) {
+                return archPath
+            }
+            // Fallback to generic venv
+            let generic = (res as NSString).appendingPathComponent("venv/bin/python3")
+            if FileManager.default.isExecutableFile(atPath: generic), canRun(generic) { return generic }
+        }
+        // Preference order: Homebrew arm64, Homebrew x86, /usr/local, system
         let candidates = [
             "/opt/homebrew/bin/python3",
             "/usr/local/bin/python3",
@@ -347,11 +453,17 @@ struct ContentView: View {
             }
             .padding(24)
             .frame(minWidth: 740, minHeight: 520)
+            .tint(accent)
         }
     }
 
     var bgMaterial: NSVisualEffectView.Material {
         colorScheme == .dark ? .hudWindow : .underWindowBackground
+    }
+
+    var accent: Color {
+        // Adaptive accent for light/dark — lean a bit richer in dark mode
+        colorScheme == .dark ? Color.indigo : Color.blue
     }
 
     var header: some View {
@@ -416,9 +528,14 @@ struct ContentView: View {
             HStack(spacing: 12) {
                 TextField("Channel ID", text: $vm.channel)
                     .textFieldStyle(.roundedBorder)
+                TextField("Channel Name", text: $vm.channelFriendlyName)
+                    .textFieldStyle(.roundedBorder)
                 Menu {
-                    ForEach(vm.savedChannels, id: \.self) { c in
-                        Button(c) { vm.channel = c }
+                    ForEach(vm.savedChannels) { c in
+                        Button(c.displayLabel) {
+                            vm.channel = c.id
+                            vm.channelFriendlyName = c.name
+                        }
                     }
                 } label: { Label("Channels", systemImage: "number") }
                 Button("Save") { vm.saveCurrentTokenChannel() }
@@ -540,6 +657,9 @@ struct ContentView: View {
 }
 
 // MARK: - App Entry
+// NOTE: To avoid the 'main attribute cannot be used in a module that contains top-level code'
+// compiler error when building with swiftc directly (due to property wrappers / global code),
+// we separate the true entry point into a thin @main struct below with no top-level side effects.
 @main
 struct TelegramUploaderGlassApp: App {
     var body: some Scene {
@@ -550,3 +670,5 @@ struct TelegramUploaderGlassApp: App {
         .windowStyle(.automatic)
     }
 }
+
+// NOTE: Entry point annotation intentionally omitted when compiling with -parse-as-library in build script.

@@ -1,0 +1,24 @@
+# macOS & Python artifacts
+.DS_Store
+__pycache__/
+*.pyc
+.venv/
+
+# Build outputs and packaged apps
+dist/
+build/
+*.dmg
+*.app/
+
+# Swift build intermediates
+TelegramUploader_Mac/.build/
+TelegramUploader_Mac/TelegramUploader.app/
+TelegramUploader_Mac/icon.iconset/
+TelegramUploader_Mac/base_icon.png
+TelegramUploader_Mac/icon_generator.py
+
+# Embedded Python venvs inside app resources (built artifacts)
+TelegramUploader_Mac/TelegramUploader.app/Contents/Resources/venv*/
+
+# Temporary staging
+staging/

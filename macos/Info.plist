@@ -8,6 +8,8 @@
     <string>Telegram Uploader</string>
     <key>CFBundleIdentifier</key>
     <string>com.udayaanudeep.telegramuploader</string>
+    <key>CFBundleShortVersionString</key>
+    <string>1.0.0</string>
     <key>CFBundleVersion</key>
     <string>1.0</string>
     <key>CFBundleExecutable</key>

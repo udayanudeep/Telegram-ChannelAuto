@@ -35,9 +35,9 @@ import re
 import math
 from pathlib import Path
 import tkinter as tk
-from tkinter import ttk, filedialog, messagebox
+from tkinter import ttk, filedialog, messagebox, simpledialog
 import tkinter.font as tkfont
-from typing import List
+from typing import List, Dict
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from queue import Queue
 import urllib.request
@@ -63,6 +63,15 @@ try:
 except Exception:
     ThemedStyle = None  # type: ignore
 
+# Optional: ttkbootstrap for modern, rounded widgets
+ttkb = None  # type: ignore
+try:
+    # Allow launcher to disable ttkbootstrap to avoid runtime incompatibilities
+    if os.environ.get('DISABLE_TTKBOOTSTRAP') != '1':
+        import ttkbootstrap as ttkb  # type: ignore
+except Exception:
+    ttkb = None  # type: ignore
+
 # ----------------- Appearance helpers (dark mode, tooltips) -----------------
 def detect_dark_mode() -> bool:
     """Detect dark mode on macOS; fallback False on other OS or failure."""
@@ -76,8 +85,10 @@ def detect_dark_mode() -> bool:
     except Exception:
         return False
 
+from typing import Optional, Any
+
 class Tooltip:
-    def __init__(self, widget, text: str, delay: int = 400):
+    def __init__(self, widget: tk.Widget, text: str, delay: int = 400):
         self.widget = widget
         self.text = text
         self.delay = delay
@@ -86,7 +97,7 @@ class Tooltip:
         widget.bind('<Enter>', self._schedule)
         widget.bind('<Leave>', self._hide)
 
-    def _schedule(self, _event=None):
+    def _schedule(self, _event: Optional[Any] = None):
         self._unschedule()
         self._id = self.widget.after(self.delay, self._show)
 
@@ -113,7 +124,7 @@ class Tooltip:
         except Exception:
             self._tip = None
 
-    def _hide(self, _event=None):
+    def _hide(self, _event: Optional[Any] = None):
         self._unschedule()
         if self._tip:
             try:
@@ -122,6 +133,109 @@ class Tooltip:
                 pass
             self._tip = None
 
+# ----------------- Material 3 (inspired) palette & theming -----------------
+def material3_palette(dark: bool = False) -> Dict[str, str]:
+    """Return a baseline Material 3-inspired color palette.
+    These are approximations of M3 baseline tones; not a full dynamic color system.
+    """
+    if not dark:
+        return {
+            'primary': '#6750A4',
+            'onPrimary': '#FFFFFF',
+            'primaryContainer': '#EADDFF',
+            'onPrimaryContainer': '#21005D',
+            'secondary': '#625B71',
+            'onSecondary': '#FFFFFF',
+            'secondaryContainer': '#E8DEF8',
+            'onSecondaryContainer': '#1D192B',
+            'surface': '#FFFBFE',
+            'onSurface': '#1C1B1F',
+            'surfaceVariant': '#E7E0EC',
+            'onSurfaceVariant': '#49454F',
+            'outline': '#79747E',
+            'error': '#B3261E',
+            'onError': '#FFFFFF',
+            'inverseSurface': '#313033',
+            'inverseOnSurface': '#F4EFF4',
+            'inversePrimary': '#D0BCFF',
+        }
+    else:
+        return {
+            'primary': '#D0BCFF',
+            'onPrimary': '#381E72',
+            'primaryContainer': '#4F378B',
+            'onPrimaryContainer': '#EADDFF',
+            'secondary': '#CCC2DC',
+            'onSecondary': '#332D41',
+            'secondaryContainer': '#4A4458',
+            'onSecondaryContainer': '#E8DEF8',
+            'surface': '#1C1B1F',
+            'onSurface': '#E6E1E6',
+            'surfaceVariant': '#49454F',
+            'onSurfaceVariant': '#CAC4D0',
+            'outline': '#938F99',
+            'error': '#F2B8B5',
+            'onError': '#601410',
+            'inverseSurface': '#E6E1E6',
+            'inverseOnSurface': '#313033',
+            'inversePrimary': '#6750A4',
+        }
+
+def apply_material3_styles(root: tk.Tk, style: ttk.Style) -> Dict[str, str]:
+    """Apply Material 3-inspired styles to ttk and tk widgets. Returns the palette used."""
+    try:
+        dark = detect_dark_mode()
+    except Exception:
+        dark = False
+    palette = material3_palette(dark)
+
+    # Use a themable engine that allows color overrides (avoid aqua)
+    try:
+        if 'clam' in style.theme_names():
+            style.theme_use('clam')
+    except Exception:
+        pass
+
+    # Root background and defaults
+    try:
+        root.configure(bg=palette['surface'])
+    except Exception:
+        pass
+
+    # Base widget backgrounds/foregrounds
+    try:
+        style.configure('.', background=palette['surface'], foreground=palette['onSurface'])
+        style.configure('TFrame', background=palette['surface'])
+        style.configure('TLabelframe', background=palette['surface'])
+        style.configure('TLabelframe.Label', background=palette['surface'], foreground=palette['onSurface'])
+        style.configure('TLabel', background=palette['surface'], foreground=palette['onSurface'])
+        style.configure('TCheckbutton', background=palette['surface'], foreground=palette['onSurface'])
+        style.configure('TRadiobutton', background=palette['surface'], foreground=palette['onSurface'])
+        # Entries
+        style.configure('TEntry', fieldbackground=palette['surface'], foreground=palette['onSurface'])
+        # Progressbar
+        style.configure('TProgressbar', background=palette['primary'])
+    except Exception:
+        pass
+
+    # Buttons: primary, secondary, danger, outline mapped to M3 tones
+    try:
+        # Primary
+        style.configure('M3Primary.TButton', background=palette['primary'], foreground=palette['onPrimary'], relief='flat', padding=(10, 6))
+        style.map('M3Primary.TButton', background=[('active', palette['inversePrimary']), ('pressed', palette['inversePrimary'])])
+        # Secondary: use surfaceVariant
+        style.configure('M3Secondary.TButton', background=palette['surfaceVariant'], foreground=palette['onSurface'], relief='flat', padding=(10, 6))
+        style.map('M3Secondary.TButton', background=[('active', palette['secondaryContainer']), ('pressed', palette['secondaryContainer'])])
+        # Outline
+        style.configure('M3Outline.TButton', background=palette['surface'], foreground=palette['onSurface'], relief='groove', padding=(10, 6))
+        # Danger
+        style.configure('M3Danger.TButton', background=palette['error'], foreground=palette['onError'], relief='flat', padding=(10, 6))
+        style.map('M3Danger.TButton', background=[('active', '#D32F2F'), ('pressed', '#D32F2F')])
+    except Exception:
+        pass
+
+    return palette
+
 # Supported extensions (used for logging and checks)
 IMAGE_EXTS = {'.jpg', '.jpeg', '.png', '.webp', '.gif', '.tiff', '.bmp', '.heic'}
 VIDEO_EXTS = {'.mp4', '.mov', '.mkv', '.avi', '.webm', '.flv', '.3gp', '.ts', '.wmv', '.m4v'}
@@ -129,11 +243,11 @@ VIDEO_EXTS = {'.mp4', '.mov', '.mkv', '.avi', '.webm', '.flv', '.3gp', '.ts', '.
 # ----------------- Helper functions (networking & upload) -----------------
 
 def is_image(p: Path) -> bool:
-    return p.suffix.lower() in {'.jpg', '.jpeg', '.png', '.webp', '.gif', '.tiff', '.bmp', '.heic'}
+    return p.suffix.lower() in IMAGE_EXTS
 
 
 def is_video(p: Path) -> bool:
-    return p.suffix.lower() in {'.mp4', '.mov', '.mkv', '.avi', '.webm', '.flv', '.3gp', '.ts', '.wmv', '.m4v'}
+    return p.suffix.lower() in VIDEO_EXTS
 
 # ----------------- Dependency helper -----------------
 def ensure_requests_available() -> bool:
@@ -142,6 +256,9 @@ def ensure_requests_available() -> bool:
     global requests
     if requests is not None:
         return True
+    # If runtime pip installs are not explicitly allowed, do not attempt network installs
+    if os.environ.get('ALLOW_RUNTIME_PIP') != '1':
+        return False
     # Try installing into user site-packages (PEP 668 friendly)
     try:
         print('[INFO] Attempting to auto-install requests to user site...')
@@ -172,8 +289,16 @@ def ensure_ttkthemes_available() -> bool:
     """Ensure ttkthemes is importable. Attempts user-site install first.
     Returns True if available, False otherwise."""
     global ThemedStyle
+    # Respect environment flags to disable optional theme dependencies in packaged apps
+    if os.environ.get('DISABLE_TTKTHEMES') == '1' or os.environ.get('DISABLE_TTKBOOTSTRAP') == '1':
+        # Do not attempt any runtime installation or import
+        return False
     if ThemedStyle is not None:
         return True
+    # If runtime pip installs are not explicitly allowed, skip auto-install
+    allow_runtime_pip = os.environ.get('ALLOW_RUNTIME_PIP') == '1'
+    if not allow_runtime_pip:
+        return False
     # Try user install
     try:
         print('[INFO] Attempting to auto-install ttkthemes to user site...')
@@ -322,13 +447,17 @@ class UploadWorker(threading.Thread):
         self.rate_limit_dict.clear()  # Clear any stored rate limiting state
         self.log('🔄 Reset connection and rate limit state')
         
-    def request_with_retries(self, url: str, data=None, files=None, context=''):
-        """Make HTTP request with retries and session management"""
+    def request_with_retries(self, url: str, data=None, files=None, context='', max_retries=None,
+                              connect_timeout: float = 15.0, read_timeout: float = 90.0):
+        """Make HTTP request with retries and session management.
+        Adds split connect/read timeout and optional per-call retry override to avoid long initial hangs.
+        """
         if not self.session:
             self.init_session()
-            
+
+        retries = int(max_retries if max_retries is not None else self.MAX_RETRIES)
         attempt = 0
-        while attempt < self.MAX_RETRIES and not self.stop_event.is_set():
+        while attempt < retries and not self.stop_event.is_set():
             attempt += 1
             # Prepare files_for_requests. If caller passed Paths (or strings),
             # open fresh file objects for this attempt so retries always send
@@ -427,10 +556,23 @@ class UploadWorker(threading.Thread):
                 pass
 
             try:
-                resp = self.session.post(url, data=data, files=files_for_requests, timeout=120)
+                resp = self.session.post(
+                    url, data=data, files=files_for_requests,
+                    timeout=(float(connect_timeout), float(read_timeout))
+                )
+            except requests.Timeout as e:
+                backoff = self.BASE_BACKOFF * (2 ** (attempt - 1)) + random.random()
+                self.log(f'Timeout ({context}) attempt {attempt}/{retries}:', e, f'backoff={backoff:.1f}s')
+                for of in opened_here:
+                    try:
+                        of.close()
+                    except Exception:
+                        pass
+                time.sleep(backoff)
+                continue
             except requests.RequestException as e:
                 backoff = self.BASE_BACKOFF * (2 ** (attempt - 1)) + random.random()
-                self.log(f'Network error ({context}) attempt {attempt}/{self.MAX_RETRIES}:', e, f'backoff={backoff:.1f}s')
+                self.log(f'Network error ({context}) attempt {attempt}/{retries}:', e, f'backoff={backoff:.1f}s')
                 for of in opened_here:
                     try:
                         of.close()
@@ -477,7 +619,7 @@ class UploadWorker(threading.Thread):
 
             return j if j is not None else resp
 
-        raise RuntimeError(f'Failed after {self.MAX_RETRIES} attempts for {context}')
+        raise RuntimeError(f'Failed after {retries} attempts for {context}')
 
     def send_media_group(self, chat_id: str, paths: List[Path]):
         """Send up to 10 media items as a Telegram album (media group).
@@ -539,7 +681,11 @@ class UploadWorker(threading.Thread):
 
         data = {'chat_id': chat_id, 'media': json.dumps(media)}
         try:
-            j = self.request_with_retries(url, data=data, files=files, context=f'media_group {valid_paths[0].name}')
+            j = self.request_with_retries(
+                url, data=data, files=files,
+                context=f'media_group {valid_paths[0].name}',
+                max_retries=2, connect_timeout=15.0, read_timeout=75.0
+            )
             return j, valid_paths
         finally:
             for f in files.values():
@@ -655,7 +801,8 @@ class UploadWorker(threading.Thread):
             if self.no_album:
                 batches = [[p] for p in remaining]
             else:
-                batches = [remaining[i:i+10] for i in range(0, len(remaining), 10)]
+                GROUP_SIZE = 5
+                batches = [remaining[i:i+GROUP_SIZE] for i in range(0, len(remaining), GROUP_SIZE)]
 
             batch_count = len(batches)
             files_sent = len(uploaded)
@@ -754,8 +901,6 @@ class UploadWorker(threading.Thread):
 
             # Initialize fresh session before starting uploads
             self.init_session()
-            # Initialize fresh session before starting uploads
-            self.init_session()
             
             # Use thread pool for parallel uploads
             with ThreadPoolExecutor(max_workers=self.max_workers) as executor:
@@ -813,12 +958,97 @@ class UploadWorker(threading.Thread):
 
 # ----------------- GUI -----------------
 
+class CollapsibleSection(ttk.Frame):
+    """A simple collapsible section with a header button and a content frame.
+
+    Usage:
+        sec = CollapsibleSection(parent, title='My Section', initially_collapsed=False,
+                                 fill='x', expand=False)
+        sec.pack(fill='x', padx=8, pady=4)
+        container = sec.content  # place inner widgets into this frame
+    """
+    def __init__(self, parent, title: str, initially_collapsed: bool = False,
+                 fill: str = 'x', expand: bool = False):
+        super().__init__(parent)
+        self._title = title
+        self._fill = fill
+        self._expand = expand
+        self._collapsed = bool(initially_collapsed)
+
+        # Header button (flat toolbutton style looks nicer for section headers)
+        self.header = ttk.Button(self, text='', command=self.toggle, style='Toolbutton')
+        self.header.pack(fill='x', anchor='w')
+
+        # Content container
+        self.content = ttk.Frame(self)
+
+        # Initialize state
+        self._refresh_header()
+        if not self._collapsed:
+            self._show()
+
+    def _refresh_header(self):
+        try:
+            arrow = '▸' if self._collapsed else '▾'
+            self.header.config(text=f'{arrow} {self._title}')
+        except Exception:
+            pass
+
+    def _show(self):
+        try:
+            self.content.pack(fill=self._fill, expand=self._expand)
+        except Exception:
+            pass
+
+    def _hide(self):
+        try:
+            if self.content.winfo_manager() != '':
+                self.content.forget()
+        except Exception:
+            pass
+
+    def toggle(self):
+        self._collapsed = not self._collapsed
+        if self._collapsed:
+            self._hide()
+        else:
+            self._show()
+        self._refresh_header()
+
+    def expand(self):
+        try:
+            if self._collapsed:
+                self.toggle()
+        except Exception:
+            pass
+
+    def collapse(self):
+        try:
+            if not self._collapsed:
+                self.toggle()
+        except Exception:
+            pass
+
 class App(tk.Tk):
     def __init__(self):
         super().__init__()
         self.title('Telegram Uploader — GUI')
-        self.geometry('900x650')
-        self.minsize(800, 600)
+        # Detect screen size and enable a compact mode for small displays
+        try:
+            screen_w = self.winfo_screenwidth()
+            screen_h = self.winfo_screenheight()
+        except Exception:
+            screen_w, screen_h = (1024, 768)
+        # Compact if height is small (e.g., 800 on many 11" MacBook Airs)
+        self.compact_mode = bool(screen_h <= 820)
+        if self.compact_mode:
+            self.geometry('820x560')
+            self.minsize(700, 520)
+            self.base_pad = 6
+        else:
+            self.geometry('900x650')
+            self.minsize(800, 600)
+            self.base_pad = 8
         # Allow root window to expand
         self.columnconfigure(0, weight=1)
         self.rowconfigure(0, weight=1)
@@ -826,13 +1056,14 @@ class App(tk.Tk):
         self.logs_dir = Path.home() / '.telegram_uploader' / 'logs'
         # Persistent store for saved tokens and channels
         self.tokens_store_file = Path.home() / '.telegram_uploader_tokens.json'
-        self.tokens_list: List[str] = []
-        self.channels_list: List[str] = []
+        self.tokens_list = []
+        self.channels_list = []
         
         # Initialize variables before creating widgets
         self.folder_var = tk.StringVar()
         self.token_var = tk.StringVar()
         self.chat_var = tk.StringVar()
+        self.channel_name_var = tk.StringVar()
         self.as_doc_var = tk.BooleanVar(value=False)
         self.no_album_var = tk.BooleanVar(value=False)
         # Option to skip token validation (useful when requests isn't available or offline)
@@ -851,10 +1082,16 @@ class App(tk.Tk):
         self.elapsed_var = tk.StringVar(value='Elapsed: 0s')
         self.filter_var = tk.StringVar(value='')
         self.caption_count_var = tk.StringVar(value='0/1024')
-        self.log_lines: List[str] = []
+        self.log_lines = []
         self.advanced_visible = True
         self.start_time_epoch = None
         self.custom_caption_text = None  # Text widget assigned later
+        # Multi-folder selection state
+        self.folders_list = []
+        self.folders_listbox = None  # set in create_widgets
+        self.multi_mode = False
+        self.remaining_folders = []
+        self.multi_success = True
         
         # Other instance variables
         self.worker = None
@@ -864,21 +1101,87 @@ class App(tk.Tk):
         
         # Create widgets and load settings
         self.setup_theme_and_fonts()
+        # Build a Material 3-style top app bar
+        try:
+            self._m3_header = ttk.Frame(self)
+            self._m3_header.pack(fill='x', side='top')
+            hdr = getattr(self, 'm3_palette', None)
+            if isinstance(hdr, dict):
+                try:
+                    self._m3_header.configure(style='M3Header.TFrame')
+                except Exception:
+                    pass
+            self._m3_title = ttk.Label(self._m3_header, text='Telegram Uploader', style='M3Header.TLabel')
+            self._m3_title.pack(anchor='w', padx=12, pady=(10, 8))
+        except Exception:
+            pass
+        # Build application menubar for managing credentials and uploads
+        try:
+            self._menubar = tk.Menu(self)
+            self.config(menu=self._menubar)
+            # Credentials menu
+            self._menu_credentials = tk.Menu(self._menubar, tearoff=0)
+            self._menubar.add_cascade(label='Credentials', menu=self._menu_credentials)
+            self._menu_credentials.add_command(label='Add Bot Token…', command=self.menu_add_token)
+            self._menu_credentials.add_command(label='Remove Current Token', command=self.menu_remove_current_token)
+            self._menu_credentials.add_separator()
+            self._menu_credentials.add_command(label='Add Channel…', command=self.menu_add_channel)
+            self._menu_credentials.add_command(label='Remove Current Channel', command=self.menu_remove_current_channel)
+            # Upload menu (so we can hide toolbar buttons from UI)
+            self._menu_upload = tk.Menu(self._menubar, tearoff=0)
+            self._menubar.add_cascade(label='Upload', menu=self._menu_upload)
+            self._menu_upload.add_command(label='Start Upload', command=self.start_upload)
+            self._menu_upload.add_command(label='Stop Upload', command=self.stop_upload)
+            self._menu_upload.add_separator()
+            self._menu_upload.add_command(label='Open Logs Folder', command=self.open_logs_directory)
+        except Exception:
+            pass
         self.create_widgets()
         self.load_settings()
         self.load_tokens_store()
+        # In compact mode, collapse advanced section by default to save vertical space
+        try:
+            if self.compact_mode and hasattr(self, 'sec_advanced'):
+                self.sec_advanced.collapse()
+        except Exception:
+            pass
+
+        # Try to bring window to front so users see it immediately
+        try:
+            self.update_idletasks()
+            self.deiconify()
+            self.lift()
+            # Temporarily set topmost to force focus, then revert
+            self.attributes('-topmost', True)
+            self.after(200, lambda: self.attributes('-topmost', False))
+        except Exception:
+            pass
 
     def setup_theme_and_fonts(self) -> None:
         """Apply a modern ttk theme (if available) and set default fonts to Lato with fallbacks."""
         try:
-            # Try to ensure ttkthemes exists, then pick a theme
+            # Try ttkbootstrap first for rounded, modern widgets
             theme_applied = False
+            if ttkb is not None:
+                try:
+                    style = ttkb.Style(self)
+                    # A clean theme with subtle roundness
+                    style.theme_use('flatly')
+                    theme_applied = True
+                    self.using_ttkbootstrap = True
+                except Exception:
+                    self.using_ttkbootstrap = False
+                    theme_applied = False
+            else:
+                self.using_ttkbootstrap = False
+
+            # Try to ensure ttkthemes exists, then pick a theme (if ttkbootstrap not used)
             try:
                 ensure_ttkthemes_available()
             except Exception:
                 pass
 
-            if 'ThemedStyle' in globals() and ThemedStyle is not None:
+            if not theme_applied and 'ThemedStyle' in globals() and ThemedStyle is not None:
                 try:
                     style = ThemedStyle(self)
                     # Prefer a modern clean theme
@@ -889,58 +1192,113 @@ class App(tk.Tk):
             if not theme_applied:
                 style = ttk.Style(self)
                 try:
-                    for t in ('clam', 'alt', 'default'):
+                    # Prefer native aqua on macOS for better rounded system buttons
+                    theme_order = ('aqua', 'clam', 'alt', 'default') if platform.system() == 'Darwin' else ('clam', 'alt', 'default')
+                    for t in theme_order:
                         if t in style.theme_names():
                             style.theme_use(t)
                             break
                 except Exception:
                     pass
 
-            # Choose font family: Lato -> Helvetica -> Arial -> TkDefault
+            # Choose font families:
+            # - Base UI font prefers Lato, then Helvetica/Arial, else Tk default
+            # - Heading font prefers Dubai (if installed) for section headers; falls back to base
             try:
                 families = {f.lower() for f in tkfont.families()}
             except Exception:
                 families = set()
+            # Base family
             if 'lato' in families:
-                family = 'Lato'
+                base_family = 'Lato'
             elif 'helvetica' in families:
-                family = 'Helvetica'
+                base_family = 'Helvetica'
             elif 'arial' in families:
-                family = 'Arial'
+                base_family = 'Arial'
             else:
-                family = None
-            size = 12
-            if family:
+                base_family = None
+            # Heading family (section labels)
+            if 'dubai' in families:
+                heading_family = 'Dubai'
+            else:
+                heading_family = base_family
+            # Slightly smaller default font in compact mode
+            size = 10 if getattr(self, 'compact_mode', False) else 12
+            if base_family:
                 try:
                     # Set default for all Tk widgets (covers tk.Text, etc.)
-                    self.option_add('*Font', f'{family} {size}')
+                    self.option_add('*Font', f'{base_family} {size}')
                 except Exception:
                     pass
                 try:
                     # Set default for ttk widgets
-                    style.configure('.', font=(family, size))
-                    style.configure('TButton', padding=(8, 4))
-                    style.configure('TLabel', padding=2)
-                    style.configure('TEntry', padding=4)
+                    style.configure('.', font=(base_family, size))
+                    # Slightly tighter paddings in compact mode
+                    if getattr(self, 'compact_mode', False):
+                        style.configure('TButton', padding=(6, 3))
+                        style.configure('TLabel', padding=1)
+                        style.configure('TEntry', padding=3)
+                    else:
+                        style.configure('TButton', padding=(8, 4))
+                        style.configure('TLabel', padding=2)
+                        style.configure('TEntry', padding=4)
                 except Exception:
                     pass
-            # Accent button style (dark/light adaptive)
+            # Apply heading font for LabelFrame titles and an optional header label style
+            try:
+                if heading_family:
+                    style.configure('TLabelframe.Label', font=(heading_family, size + 1))
+                    style.configure('Heading.TLabel', font=(heading_family, size + 1))
+            except Exception:
+                pass
+            # Accent and Danger button styles (dark/light adaptive)
             try:
                 dark = detect_dark_mode()
                 if dark:
-                    accent_fg = '#ffffff'
-                    accent_bg = '#7c3aed'  # purple
-                    accent_bg_active = '#6d28d9'
+                    accent_fg = '#FFFFFF'
+                    accent_bg = '#D0BCFF'  # M3 dark primary
+                    accent_bg_active = '#B69DF8'
+                    danger_bg = '#F2B8B5'
+                    danger_active = '#E59893'
                 else:
-                    accent_fg = '#ffffff'
-                    accent_bg = '#14b8a6'  # teal
-                    accent_bg_active = '#0d9488'
-                style.configure('Accent.TButton', foreground=accent_fg, background=accent_bg)
-                style.map('Accent.TButton', background=[('active', accent_bg_active), ('pressed', accent_bg_active)])
+                    accent_fg = '#FFFFFF'
+                    accent_bg = '#6750A4'  # M3 light primary
+                    accent_bg_active = '#7F67BE'
+                    danger_bg = '#B3261E'
+                    danger_active = '#8C1D18'
+
+                # If ttkbootstrap is present, rely on its rounded look and palette; otherwise color our styles
+                if getattr(self, 'using_ttkbootstrap', False):
+                    # Map our semantic names to ttkbootstrap built-ins by convention
+                    # We'll set styles when creating buttons by choosing appropriate bootstyles if needed.
+                    pass
+                else:
+                    # Use system/default foreground to avoid invisible text if theme has light fg on light bg
+                    try:
+                        default_fg = style.lookup('TButton', 'foreground', default='black') or 'black'
+                    except Exception:
+                        default_fg = 'black'
+                    style.configure('Accent.TButton', foreground=accent_fg, background=accent_bg, relief='flat')
+                    style.map('Accent.TButton', background=[('active', accent_bg_active), ('pressed', accent_bg_active)])
+                    style.configure('Danger.TButton', foreground='#FFFFFF' if not dark else '#201A1A', background=danger_bg, relief='flat')
+                    style.map('Danger.TButton', background=[('active', danger_active), ('pressed', danger_active)])
             except Exception:
                 pass
             # Expose style on instance for later tweaks
             self.style = style
+
+            # Apply Material 3-inspired styles over the base theme
+            try:
+                pal = apply_material3_styles(self, self.style)
+                self.m3_palette = pal
+                # Header styles
+                try:
+                    self.style.configure('M3Header.TFrame', background=pal['primary'])
+                    self.style.configure('M3Header.TLabel', background=pal['primary'], foreground=pal['onPrimary'], font=('Helvetica', 14, 'bold'))
+                except Exception:
+                    pass
+            except Exception:
+                self.m3_palette = None
         except Exception:
             # Never let theme/font setup break the app
             try:
@@ -952,6 +1310,7 @@ class App(tk.Tk):
         settings = {
             'token': self.token_var.get().strip(),
             'chat_id': self.chat_var.get().strip(),
+            'channel_name': self.channel_name_var.get().strip(),
             'as_document': self.as_doc_var.get(),
             'no_album': self.no_album_var.get(),
             'delay': self.delay_var.get(),
@@ -961,7 +1320,8 @@ class App(tk.Tk):
             'include_link': self.include_link_var.get(),
             'channel_link': self.channel_link_var.get().strip(),
             'use_custom_caption': self.use_custom_caption_var.get(),
-            'custom_caption': (self.custom_caption_text.get('1.0', 'end-1c').strip() if self.custom_caption_text is not None else self.custom_caption_var.get().strip())
+            'custom_caption': (self.custom_caption_text.get('1.0', 'end-1c').strip() if self.custom_caption_text is not None else self.custom_caption_var.get().strip()),
+            'folders': list(self.folders_list)
         }
         try:
             self.config_file.write_text(json.dumps(settings, indent=2))
@@ -976,6 +1336,8 @@ class App(tk.Tk):
                     self.token_var.set(settings['token'])
                 if settings.get('chat_id'):
                     self.chat_var.set(settings['chat_id'])
+                if settings.get('channel_name'):
+                    self.channel_name_var.set(settings['channel_name'])
                 if 'as_document' in settings:
                     self.as_doc_var.set(settings['as_document'])
                 if 'no_album' in settings:
@@ -1003,11 +1365,23 @@ class App(tk.Tk):
                             self.custom_caption_text.insert('1.0', settings['custom_caption'])
                         except Exception:
                             pass
+                if 'folders' in settings and isinstance(settings['folders'], list):
+                    try:
+                        self.folders_list = [str(p) for p in settings['folders']]
+                        if self.folders_listbox is not None:
+                            self.folders_listbox.delete(0, 'end')
+                            for p in self.folders_list:
+                                self.folders_listbox.insert('end', p)
+                    except Exception:
+                        pass
         except Exception as e:
             messagebox.showwarning('Warning', f'Could not load settings: {e}')
 
     def create_widgets(self):
-        pad = 8
+        pad = getattr(self, 'base_pad', 8)
+        # Fixed log height: 5 rows (user request) regardless of compact mode
+        log_height = 5
+
         # Top frame (folder, token, channel selectors)
         frm_top = ttk.Frame(self)
         frm_top.pack(fill='x', padx=pad, pady=pad)
@@ -1015,167 +1389,178 @@ class App(tk.Tk):
             frm_top.columnconfigure(i, weight=0)
         frm_top.columnconfigure(1, weight=1)
 
-        # Folder selection
         ttk.Label(frm_top, text='Folder:').grid(row=0, column=0, sticky='w')
         self.entry_folder = ttk.Entry(frm_top, textvariable=self.folder_var)
         self.entry_folder.grid(row=0, column=1, sticky='ew')
-        ttk.Button(frm_top, text='Browse', command=self.browse_folder).grid(row=0, column=2, padx=6)
+        self.make_button(frm_top, text='Browse', command=self.browse_folder, role='secondary').grid(row=0, column=2, padx=6)
 
-        # Bot token
-        ttk.Label(frm_top, text='Bot Token:').grid(row=1, column=0, sticky='w', pady=(6,0))
-        self.entry_token = ttk.Entry(frm_top, textvariable=self.token_var, show='*')
-        self.entry_token.grid(row=1, column=1, sticky='ew')
-        ttk.Button(frm_top, text='Show', command=self.toggle_token).grid(row=1, column=2, padx=6)
-
-        # Saved tokens selector and save button
-        ttk.Label(frm_top, text='Saved Tokens:').grid(row=2, column=0, sticky='w', pady=(4,0))
-        self.token_combo = ttk.Combobox(frm_top, state='readonly')
-        self.token_combo.grid(row=2, column=1, sticky='ew', pady=(4,0))
+        ttk.Label(frm_top, text='Saved Token:').grid(row=1, column=0, sticky='w', pady=(6,0))
+        self.token_combo = ttk.Combobox(frm_top, state='readonly', textvariable=self.token_var)
+        self.token_combo.grid(row=1, column=1, sticky='ew', pady=(6,0))
         self.token_combo.bind('<<ComboboxSelected>>', lambda e: self.select_saved_token())
-        ttk.Button(frm_top, text='Save Token', command=self.save_current_token).grid(row=2, column=2, padx=6, pady=(4,0))
+        self.make_button(frm_top, text='Save Current', command=self.save_current_token, role='secondary').grid(row=1, column=2, padx=6, pady=(6,0))
 
-        # Channel ID
-        ttk.Label(frm_top, text='Channel ID:').grid(row=3, column=0, sticky='w', pady=(6,0))
-        self.entry_chat = ttk.Entry(frm_top, textvariable=self.chat_var)
-        self.entry_chat.grid(row=3, column=1, sticky='ew')
-        ttk.Button(frm_top, text='Save Channel', command=self.save_current_channel).grid(row=3, column=2, padx=6, pady=(6,0))
-        ttk.Label(frm_top, text='Saved Channels:').grid(row=4, column=0, sticky='w', pady=(4,0))
+        ttk.Label(frm_top, text='Saved Channels:').grid(row=2, column=0, sticky='w', pady=(4,0))
         self.channel_combo = ttk.Combobox(frm_top, state='readonly')
-        self.channel_combo.grid(row=4, column=1, sticky='ew', pady=(4,0))
+        self.channel_combo.grid(row=2, column=1, sticky='ew', pady=(4,0))
         self.channel_combo.bind('<<ComboboxSelected>>', lambda e: self.select_saved_channel())
+        self.make_button(frm_top, text='Save Channel', command=self.save_current_channel, role='secondary').grid(row=2, column=2, padx=6, pady=(4,0))
 
-        # Basic options frame (caption related)
-        frm_basic = ttk.Frame(self)
-        frm_basic.pack(fill='x', padx=pad)
-        for i in range(3):
-            frm_basic.columnconfigure(i, weight=1)
-        ttk.Checkbutton(frm_basic, text='Send as document (preserve quality)', variable=self.as_doc_var, command=self.update_caption_preview).grid(row=0, column=0, sticky='w')
-        ttk.Checkbutton(frm_basic, text='No album (send files individually)', variable=self.no_album_var).grid(row=0, column=1, sticky='w', padx=12)
-        ttk.Checkbutton(frm_basic, text='Append channel link in caption', variable=self.include_link_var, command=self.update_caption_preview).grid(row=0, column=2, sticky='w', padx=(12,0))
-        ttk.Label(frm_basic, text='Channel link:').grid(row=1, column=0, sticky='w', pady=(4,0))
-        channel_link_entry = ttk.Entry(frm_basic, textvariable=self.channel_link_var)
-        channel_link_entry.grid(row=1, column=1, sticky='ew', pady=(4,0))
-        ttk.Checkbutton(frm_basic, text='Use custom caption base', variable=self.use_custom_caption_var, command=self.update_caption_preview).grid(row=1, column=2, sticky='w', pady=(4,0), padx=(12,0))
-        ttk.Label(frm_basic, text='Custom caption (multi-line):').grid(row=2, column=0, sticky='nw', pady=(4,0))
-        cap_container = ttk.Frame(frm_basic)
-        cap_container.grid(row=2, column=1, sticky='nsew', pady=(4,0))
-        frm_basic.rowconfigure(2, weight=1)
-        cap_container.columnconfigure(0, weight=1)
-        self.custom_caption_text = tk.Text(cap_container, height=4, wrap='word')
-        self.custom_caption_text.grid(row=0, column=0, sticky='nsew')
-        cap_scroll = ttk.Scrollbar(cap_container, orient='vertical', command=self.custom_caption_text.yview)
-        cap_scroll.grid(row=0, column=1, sticky='ns')
-        self.custom_caption_text.configure(yscrollcommand=cap_scroll.set)
-        ttk.Button(frm_basic, text='Copy Caption', command=self.copy_current_caption).grid(row=2, column=2, sticky='w', pady=(4,0), padx=(12,0))
-        ttk.Label(frm_basic, text='Caption preview:').grid(row=3, column=0, sticky='nw', pady=(6,0))
-        preview_entry = ttk.Entry(frm_basic, textvariable=self.caption_preview_var, state='readonly')
-        preview_entry.grid(row=3, column=1, columnspan=2, sticky='ew', pady=(6,0))
+        # Link Bot Token - Channel Name (Channel ID)
+        frm_link = ttk.Frame(self)
+        frm_link.pack(fill='x', padx=pad, pady=(0,6))
+        frm_link.columnconfigure(1, weight=1)
+        ttk.Label(frm_link, text='Channel Name (ID):').grid(row=0, column=0, sticky='w')
+        self.entry_channel_name = ttk.Entry(frm_link, textvariable=self.channel_name_var)
+        self.entry_channel_name.grid(row=0, column=1, sticky='ew')
+        ttk.Label(frm_link, text='Channel ID:').grid(row=1, column=0, sticky='w', pady=(4,0))
+        self.entry_chat = ttk.Entry(frm_link, textvariable=self.chat_var)
+        self.entry_chat.grid(row=1, column=1, sticky='ew', pady=(4,0))
+
+        # Folders section
+        self.sec_folders = CollapsibleSection(self, title='Folders Selected', initially_collapsed=self.compact_mode)
+        self.sec_folders.pack(fill='x', padx=pad, pady=(0,6))
+        frm_multi = self.sec_folders.content
+        frm_multi.columnconfigure(0, weight=1)
+        # Multi-selection listbox
+        self.folders_listbox = tk.Listbox(
+            frm_multi,
+            height=4 if not self.compact_mode else 3,
+            selectmode='extended',
+            exportselection=False
+        )
+        self.folders_listbox.grid(row=0, column=0, sticky='ew')
         try:
-            self.channel_link_var.trace_add('write', lambda *a: self.update_caption_preview())
+            pal = getattr(self, 'm3_palette', None)
+            if isinstance(pal, dict):
+                self.folders_listbox.configure(
+                    bg=pal['surface'], fg=pal['onSurface'],
+                    selectbackground=pal['secondaryContainer'],
+                    selectforeground=pal['onSecondaryContainer'],
+                    highlightthickness=0, bd=0
+                )
         except Exception:
             pass
-        channel_link_entry.bind('<KeyRelease>', lambda e: self.update_caption_preview())
-        if self.custom_caption_text is not None:
-            self.custom_caption_text.bind('<KeyRelease>', lambda e: self.update_caption_preview())
-        self.update_caption_preview()
+        sb_folders = ttk.Scrollbar(frm_multi, orient='vertical', command=self.folders_listbox.yview)
+        sb_folders.grid(row=0, column=1, sticky='ns')
+        self.folders_listbox.configure(yscrollcommand=sb_folders.set)
+        try:
+            Tooltip(self.folders_listbox, 'Tip: Use Cmd(⌘)-click to toggle selection, Shift-click for ranges.')
+        except Exception:
+            pass
+        btns_multi = ttk.Frame(frm_multi)
+        btns_multi.grid(row=1, column=0, columnspan=2, sticky='w', pady=(4,0))
+        self.make_button(btns_multi, text='Add Folder', command=self.add_folder, role='primary').pack(side='left')
+        self.make_button(btns_multi, text='Add Folders (Recursive…) ', command=self.add_folders_recursive_dialog, role='secondary').pack(side='left', padx=(6,0))
+        self.make_button(btns_multi, text='Add Subfolders…', command=self.add_subfolders, role='secondary').pack(side='left', padx=(6,0))
+        self.make_button(btns_multi, text='Remove Selected', command=self.remove_selected_folders, role='danger').pack(side='left', padx=(6,0))
+        self.make_button(btns_multi, text='Clear', command=self.clear_folders, role='outline').pack(side='left', padx=(6,0))
+        self.make_button(btns_multi, text='Keep Selected Only', command=self.keep_selected_only, role='outline').pack(side='left', padx=(6,0))
+        self.make_button(btns_multi, text='Select All', command=self.select_all_folders, role='outline').pack(side='left', padx=(6,0))
+        self.make_button(btns_multi, text='Invert Selection', command=self.invert_selection, role='outline').pack(side='left', padx=(6,0))
 
-        frm_prog = ttk.Frame(self)
-        frm_prog.pack(fill='x', padx=pad, pady=(8,0))
-        frm_prog.columnconfigure(0, weight=1)
-        self.progress = ttk.Progressbar(frm_prog, mode='determinate', length=100)
-        self.progress.pack(fill='x', expand=True)
-        ttk.Label(frm_prog, textvariable=self.status_var).pack(anchor='w', pady=(4,0))
+        # Minimal link option row (append channel link in captions)
+        link_frame = ttk.Frame(self)
+        link_frame.pack(fill='x', padx=pad)
+        ttk.Label(link_frame, text='Channel link (appended to caption):').grid(row=0, column=0, sticky='w')
+        channel_link_entry = ttk.Entry(link_frame, textvariable=self.channel_link_var)
+        channel_link_entry.grid(row=0, column=1, sticky='ew')
+        ttk.Checkbutton(link_frame, text='Append link', variable=self.include_link_var, command=self.update_caption_preview).grid(row=0, column=2, sticky='w', padx=(8,0))
+        try:
+            Tooltip(channel_link_entry, 'Channel link added to caption when enabled')
+        except Exception:
+            pass
 
-        # Advanced toggle
-        toggle_frame = ttk.Frame(self)
-        toggle_frame.pack(fill='x', padx=pad, pady=(4,0))
-        self.btn_adv_toggle = ttk.Button(toggle_frame, text='Hide Advanced ▴', command=self.toggle_advanced)
-        self.btn_adv_toggle.pack(anchor='w')
+        # Actions row (minimal surface: Start / Stop)
+        actions = ttk.Frame(self)
+        actions.pack(fill='x', padx=pad, pady=(6, 0))
+        self.btn_start = self.make_button(actions, text='Start Upload', command=self.start_upload, role='primary')
+        self.btn_start.pack(side='left')
+        self.btn_stop = self.make_button(actions, text='Stop', command=self.stop_upload, role='danger', state='disabled')
+        self.btn_stop.pack(side='left', padx=(6, 0))
+        # Progress bar (compact)
+        self.progress = ttk.Progressbar(actions, orient='horizontal', mode='determinate', length=160)
+        self.progress.pack(side='left', padx=(12,0))
+        try:
+            self.progress['maximum'] = 100
+            self.progress['value'] = 0
+        except Exception:
+            pass
 
-        frm_buttons = ttk.Frame(self)
-        frm_buttons.pack(fill='x', padx=pad, pady=(6,0))
-        for i in range(6):
-            frm_buttons.columnconfigure(i, weight=1)
-        self.btn_start = ttk.Button(frm_buttons, text='Start Upload', command=self.start_upload, style='Accent.TButton')
-        self.btn_start.grid(row=0, column=0, sticky='ew', padx=4, pady=2)
-        self.btn_stop = ttk.Button(frm_buttons, text='Stop', command=self.stop_upload, state='disabled')
-        self.btn_stop.grid(row=0, column=1, sticky='ew', padx=4, pady=2)
-        ttk.Button(frm_buttons, text='Test Connection', command=self.test_connection).grid(row=0, column=2, sticky='ew', padx=4, pady=2)
-        ttk.Button(frm_buttons, text='Open Logs', command=self.open_logs_directory).grid(row=0, column=3, sticky='ew', padx=4, pady=2)
-        ttk.Button(frm_buttons, text='Undo Last Move', command=self.undo_last_move).grid(row=0, column=4, sticky='ew', padx=4, pady=2)
-        ttk.Button(frm_buttons, text='Open Progress File', command=self.open_progress_file).grid(row=0, column=5, sticky='ew', padx=4, pady=2)
-        ttk.Button(frm_buttons, text='Clear Progress File', command=self.clear_progress_file).grid(row=1, column=0, sticky='ew', padx=4, pady=2)
-        ttk.Button(frm_buttons, text='Save Settings', command=self.save_settings).grid(row=1, column=1, sticky='ew', padx=4, pady=2)
-        ttk.Button(frm_buttons, text='Save As...', command=self.save_settings_as).grid(row=1, column=2, sticky='ew', padx=4, pady=2)
-        ttk.Button(frm_buttons, text='Load Settings...', command=self.load_settings_from_file).grid(row=1, column=3, sticky='ew', padx=4, pady=2)
-        ttk.Label(frm_buttons).grid(row=1, column=4, sticky='ew')
-        ttk.Label(frm_buttons).grid(row=1, column=5, sticky='ew')
-
-        # Log filter bar
-        frm_filter = ttk.Frame(self)
-        frm_filter.pack(fill='x', padx=pad, pady=(6,0))
-        ttk.Label(frm_filter, text='Filter log:').pack(side='left')
-        ent_filter = ttk.Entry(frm_filter, textvariable=self.filter_var)
-        ent_filter.pack(side='left', fill='x', expand=True, padx=(6,0))
-        ttk.Button(frm_filter, text='Clear', command=lambda: self.filter_var.set('')).pack(side='left', padx=6)
-        # Tooltip example
-        Tooltip(channel_link_entry, 'Channel link added to caption when enabled')
+        # Logs section
         frm_log = ttk.Frame(self)
-        frm_log.pack(fill='both', expand=True, padx=pad, pady=(6, pad))
+        # Keep horizontal fill, but avoid vertical expansion so height stays ~5 lines
+        frm_log.pack(fill='x', expand=False, padx=pad, pady=(6, pad))
         frm_log.columnconfigure(0, weight=1)
         frm_log.rowconfigure(0, weight=1)
         log_scroll_y = ttk.Scrollbar(frm_log, orient='vertical')
         log_scroll_y.grid(row=0, column=1, sticky='ns')
-        self.log_widget = tk.Text(frm_log, wrap='word', height=15, yscrollcommand=log_scroll_y.set)
+        self.log_widget = tk.Text(frm_log, wrap='word', height=log_height, yscrollcommand=log_scroll_y.set)
         self.log_widget.grid(row=0, column=0, sticky='nsew')
         log_scroll_y.config(command=self.log_widget.yview)
         self.log_widget.configure(state='disabled')
-        # Status bar (elapsed time)
+        try:
+            pal = getattr(self, 'm3_palette', None)
+            if isinstance(pal, dict):
+                self.log_widget.configure(bg=pal['surface'], fg=pal['onSurface'], insertbackground=pal['onSurface'])
+        except Exception:
+            pass
+
+        # Status bar
         status_bar = ttk.Frame(self)
         status_bar.pack(fill='x', padx=pad, pady=(0,6))
+        ttk.Label(status_bar, textvariable=self.status_var).pack(side='left')
         ttk.Label(status_bar, textvariable=self.elapsed_var).pack(side='right')
-        # Trace filter changes
-        try:
-            self.filter_var.trace_add('write', lambda *a: self.refresh_log_view())
-        except Exception:
-            pass
-        # Schedule elapsed timer
-        self.after(1000, self._tick_elapsed)
-        # Add caption length indicator near preview
-        ttk.Label(frm_basic, textvariable=self.caption_count_var).grid(row=3, column=2, sticky='e', padx=(0,4))
 
-        # Advanced frame content (moved timing & execution controls here)
-        self.advanced_frame = ttk.Frame(self)
-        self.advanced_frame.pack(fill='x', padx=pad, pady=(4,0))
+        # Advanced options section
+        self.sec_advanced = CollapsibleSection(self, title='Advanced Options', initially_collapsed=self.compact_mode)
+        self.sec_advanced.pack(fill='x', padx=pad, pady=(4,0))
+        frm_adv = self.sec_advanced.content
         for i in range(3):
-            self.advanced_frame.columnconfigure(i, weight=1)
-        ttk.Label(self.advanced_frame, text='Delay (s):').grid(row=0, column=0, sticky='w')
-        ttk.Entry(self.advanced_frame, textvariable=self.delay_var, width=8).grid(row=0, column=0, sticky='e')
-        ttk.Label(self.advanced_frame, text='Jitter (s):').grid(row=0, column=1, sticky='w')
-        ttk.Entry(self.advanced_frame, textvariable=self.jitter_var, width=8).grid(row=0, column=1, sticky='e')
-        ttk.Label(self.advanced_frame, text='Parallel uploads:').grid(row=0, column=2, sticky='w', padx=(12,0))
-        ttk.Entry(self.advanced_frame, textvariable=self.max_workers_var, width=3).grid(row=0, column=2, sticky='e')
-        ttk.Checkbutton(self.advanced_frame, text='Resume previous run if progress found', variable=self.resume_var).grid(row=1, column=0, columnspan=2, sticky='w', pady=(4,0))
-        ttk.Checkbutton(self.advanced_frame, text='Move files to .uploaded after upload (safer)', variable=self.delete_after_upload_var).grid(row=1, column=2, sticky='w', pady=(4,0))
-        ttk.Checkbutton(self.advanced_frame, text='Skip bot token validation (use with caution)', variable=self.skip_validate_var).grid(row=2, column=0, columnspan=3, sticky='w', pady=(4,0))
-        # Tooltips for advanced controls
-        Tooltip(self.advanced_frame.children.get('!entry'), 'Base delay added between sends.')
-        # Find jitter entry by iterating children (simple heuristic)
-        for w in self.advanced_frame.winfo_children():
-            try:
-                if isinstance(w, ttk.Entry) and w is not self.advanced_frame.children.get('!entry'):
-                    Tooltip(w, 'Random jitter (0–value seconds) added to delay.')
-                    break
-            except Exception:
-                pass
-        Tooltip(self.advanced_frame.children.get('!checkbutton'), 'Attempt to resume from existing .upload_progress.json')
-        # parallel uploads entry tooltip
+            frm_adv.columnconfigure(i, weight=1)
+        ttk.Label(frm_adv, text='Delay (s):').grid(row=0, column=0, sticky='w')
+        ttk.Entry(frm_adv, textvariable=self.delay_var, width=8).grid(row=0, column=0, sticky='e')
+        ttk.Label(frm_adv, text='Jitter (s):').grid(row=0, column=1, sticky='w')
+        ttk.Entry(frm_adv, textvariable=self.jitter_var, width=8).grid(row=0, column=1, sticky='e')
+        ttk.Label(frm_adv, text='Parallel uploads:').grid(row=0, column=2, sticky='w', padx=(12,0))
+        ttk.Entry(frm_adv, textvariable=self.max_workers_var, width=3).grid(row=0, column=2, sticky='e')
+        ttk.Checkbutton(frm_adv, text='Resume previous run if progress found', variable=self.resume_var).grid(row=1, column=0, columnspan=2, sticky='w', pady=(4,0))
+        ttk.Checkbutton(frm_adv, text='Move files to .uploaded after upload (safer)', variable=self.delete_after_upload_var).grid(row=1, column=2, sticky='w', pady=(4,0))
+        ttk.Checkbutton(frm_adv, text='Skip bot token validation (use with caution)', variable=self.skip_validate_var).grid(row=2, column=0, columnspan=3, sticky='w', pady=(4,0))
+
+        # Start elapsed timer and initial caption preview computation
+        self.after(1000, self._tick_elapsed)
+        self.update_caption_preview()
+    def make_button(self, parent, text: str, command=None, role: str = 'secondary', **kwargs):
+        """Create a nicely-styled (rounded when possible) button.
+        role: 'primary' | 'danger' | 'info' | 'secondary' | 'outline'
+        """
         try:
-            for w in self.advanced_frame.winfo_children():
-                if isinstance(w, ttk.Entry) and w['width'] == '3':
-                    Tooltip(w, 'Maximum parallel upload workers (1-10).')
+            if getattr(self, 'using_ttkbootstrap', False) and ttkb is not None:
+                # Map semantic role to ttkbootstrap bootstyle
+                role_map = {
+                    'primary': 'primary',
+                    'danger': 'danger',
+                    'info': 'info',
+                    'secondary': 'secondary',
+                    'outline': 'secondary-outline'
+                }
+                bootstyle = role_map.get(role, 'secondary')
+                return ttkb.Button(parent, text=text, command=command, bootstyle=bootstyle, **kwargs)
+            else:
+                # Fallback to ttk styles configured earlier
+                style = None
+                if role == 'primary':
+                    style = 'Accent.TButton'
+                elif role == 'danger':
+                    style = 'Danger.TButton'
+                # info/secondary/outline fall back to default style
+                if style:
+                    return ttk.Button(parent, text=text, command=command, style=style, **kwargs)
+                return ttk.Button(parent, text=text, command=command, **kwargs)
         except Exception:
-            pass
+            # Last-resort plain tk.Button
+            return tk.Button(parent, text=text, command=command, **kwargs)
     def browse_folder(self):
         path = filedialog.askdirectory()
         if path:
@@ -1188,13 +1573,13 @@ class App(tk.Tk):
             if self.tokens_store_file.exists():
                 data = json.loads(self.tokens_store_file.read_text())
                 tokens = data.get('tokens', [])
-                channels = data.get('channels', [])
+                channels_raw = data.get('channels', [])
                 # Deduplicate while preserving order
                 def dedupe(seq):
                     seen = set()
                     out = []
                     for item in seq:
-                        item = item.strip()
+                        item = str(item).strip()
                         if not item:
                             continue
                         if item not in seen:
@@ -1202,7 +1587,20 @@ class App(tk.Tk):
                             out.append(item)
                     return out
                 self.tokens_list = dedupe(tokens)[:50]
-                self.channels_list = dedupe(channels)[:50]
+                # Normalize channels to list of dicts {id,name}
+                norm = []
+                seen_ids = set()
+                for ch in channels_raw:
+                    if isinstance(ch, dict):
+                        cid = str(ch.get('id', '')).strip()
+                        cname = str(ch.get('name', '')).strip() or cid
+                    else:
+                        cid = str(ch).strip()
+                        cname = cid
+                    if cid and cid not in seen_ids:
+                        seen_ids.add(cid)
+                        norm.append({'id': cid, 'name': cname})
+                self.channels_list = norm[:50]
             else:
                 self.tokens_list = []
                 self.channels_list = []
@@ -1226,7 +1624,13 @@ class App(tk.Tk):
             if hasattr(self, 'token_combo'):
                 self.token_combo['values'] = self.tokens_list
             if hasattr(self, 'channel_combo'):
-                self.channel_combo['values'] = self.channels_list
+                labels = []
+                for c in self.channels_list:
+                    if isinstance(c, dict):
+                        labels.append(f"{c.get('name','')} — {c.get('id','')}")
+                    else:
+                        labels.append(str(c))
+                self.channel_combo['values'] = labels
         except Exception:
             pass
 
@@ -1240,15 +1644,125 @@ class App(tk.Tk):
             self.save_tokens_store()
             self.update_tokens_channels_combos()
 
-    def save_current_channel(self):
-        chan = self.chat_var.get().strip()
-        if not chan:
+    # ---- Menubar token/channel management ----
+    def menu_add_token(self):
+        try:
+            tok = simpledialog.askstring('Add Bot Token', 'Enter bot token:', parent=self)
+        except Exception:
+            tok = None
+        if not tok:
             return
-        if chan not in self.channels_list:
-            self.channels_list.insert(0, chan)
-            self.channels_list = self.channels_list[:50]
+        self.token_var.set(tok.strip())
+        self.save_current_token()
+
+    def menu_remove_current_token(self):
+        tok = self.token_var.get().strip()
+        if not tok:
+            return
+        try:
+            self.tokens_list = [t for t in self.tokens_list if t != tok]
             self.save_tokens_store()
             self.update_tokens_channels_combos()
+        except Exception:
+            pass
+
+    def save_current_channel(self):
+        chan_id = self.chat_var.get().strip()
+        if not chan_id:
+            return
+        chan_name = self.channel_name_var.get().strip() or chan_id
+        # Dedupe by id
+        try:
+            existing_ids = {c['id'] for c in self.channels_list}
+        except Exception:
+            existing_ids = set()
+        if chan_id not in existing_ids:
+            self.channels_list.insert(0, {'id': chan_id, 'name': chan_name})
+        else:
+            for c in self.channels_list:
+                try:
+                    if c.get('id') == chan_id:
+                        c['name'] = chan_name
+                        break
+                except Exception:
+                    pass
+        self.channels_list = self.channels_list[:50]
+        self.save_tokens_store()
+        self.update_tokens_channels_combos()
+
+    def menu_add_channel(self):
+        try:
+            cid = simpledialog.askstring('Add Channel', 'Enter channel ID (@username or -100...):', parent=self)
+            if not cid:
+                return
+            name = simpledialog.askstring('Channel Name', 'Friendly name (optional):', parent=self)
+        except Exception:
+            cid = None
+            name = None
+        if not cid:
+            return
+        self.chat_var.set(cid.strip())
+        if name:
+            self.channel_name_var.set(name.strip())
+        self.save_current_channel()
+
+    def menu_remove_current_channel(self):
+        cid = self.chat_var.get().strip()
+        if not cid:
+            return
+        try:
+            self.channels_list = [c for c in self.channels_list if not (isinstance(c, dict) and c.get('id') == cid)]
+            self.save_tokens_store()
+            self.update_tokens_channels_combos()
+        except Exception:
+            pass
+
+    # ---- Captions menu actions ----
+    def menu_set_custom_caption(self):
+        try:
+            txt = simpledialog.askstring('Custom Caption', 'Enter custom caption text (used as base):', parent=self, initialvalue=self.custom_caption_var.get())
+        except Exception:
+            txt = None
+        if txt is None:
+            return
+        txt = txt.strip()
+        self.use_custom_caption_var.set(True)
+        self.custom_caption_var.set(txt)
+        if self.custom_caption_text is not None:
+            try:
+                self.custom_caption_text.delete('1.0', 'end')
+                self.custom_caption_text.insert('1.0', txt)
+            except Exception:
+                pass
+        self.update_caption_preview()
+
+    def menu_clear_custom_caption(self):
+        self.use_custom_caption_var.set(False)
+        self.custom_caption_var.set('')
+        if self.custom_caption_text is not None:
+            try:
+                self.custom_caption_text.delete('1.0', 'end')
+            except Exception:
+                pass
+        self.update_caption_preview()
+
+    def menu_toggle_append_link(self):
+        try:
+            self.include_link_var.set(not bool(self.include_link_var.get()))
+        except Exception:
+            pass
+        self.update_caption_preview()
+
+    def menu_set_channel_link(self):
+        try:
+            cur = self.channel_link_var.get().strip()
+            link = simpledialog.askstring('Channel Link', 'Set the channel link to append:', parent=self, initialvalue=cur)
+        except Exception:
+            link = None
+        if link is None:
+            return
+        self.channel_link_var.set(link.strip())
+        self.update_caption_preview()
 
     def update_caption_preview(self):
         """Recompute caption preview using current GUI settings."""
@@ -1258,7 +1772,13 @@ class App(tk.Tk):
             else:
                 base = self.custom_caption_var.get().strip()
         else:
-            base = Path(self.folder_var.get().strip()).name if self.folder_var.get().strip() else ''
+            if self.folders_list:
+                try:
+                    base = Path(self.folders_list[0]).name
+                except Exception:
+                    base = ''
+            else:
+                base = Path(self.folder_var.get().strip()).name if self.folder_var.get().strip() else ''
         if not base:
             base = '(folder name)'
         if self.include_link_var.get() and self.channel_link_var.get().strip():
@@ -1287,8 +1807,315 @@ class App(tk.Tk):
 
     def select_saved_channel(self):
         sel = self.channel_combo.get().strip()
-        if sel:
+        if not sel:
+            return
+        # expected format "Name — ID"; fallback to raw
+        try:
+            if '—' in sel:
+                name_part, id_part = sel.split('—', 1)
+                self.channel_name_var.set(name_part.strip())
+                self.chat_var.set(id_part.strip())
+            else:
+                self.chat_var.set(sel)
+        except Exception:
             self.chat_var.set(sel)
+
+    # ---- Multi-folder helpers ----
+    def add_folder(self):
+        path = filedialog.askdirectory()
+        if path:
+            if path not in self.folders_list:
+                self.folders_list.append(path)
+                if self.folders_listbox is not None:
+                    self.folders_listbox.insert('end', path)
+            # keep single-folder field synced for non-multi code paths
+            self.folder_var.set(path)
+            self.update_caption_preview()
+
+    def remove_selected_folders(self):
+        if self.folders_listbox is None:
+            return
+        try:
+            sel = list(self.folders_listbox.curselection())
+            sel.sort(reverse=True)
+            for idx in sel:
+                try:
+                    self.folders_list.pop(idx)
+                except Exception:
+                    pass
+                self.folders_listbox.delete(idx)
+        except Exception:
+            pass
+        self.update_caption_preview()
+
+    def clear_folders(self):
+        self.folders_list.clear()
+        if self.folders_listbox is not None:
+            self.folders_listbox.delete(0, 'end')
+        self.update_caption_preview()
+
+    def select_all_folders(self):
+        """Select all entries in the folders listbox."""
+        if self.folders_listbox is None:
+            return
+        try:
+            self.folders_listbox.selection_set(0, 'end')
+        except Exception:
+            pass
+
+    def invert_selection(self):
+        """Invert the current selection in the folders listbox."""
+        if self.folders_listbox is None:
+            return
+        try:
+            count = self.folders_listbox.size()
+            current = set(self.folders_listbox.curselection())
+            self.folders_listbox.selection_clear(0, 'end')
+            for i in range(count):
+                if i not in current:
+                    self.folders_listbox.selection_set(i)
+        except Exception:
+            pass
+
+    def add_subfolders(self):
+        """Add immediate subfolders of a chosen parent directory to the folders list.
+        Filters to subfolders that contain at least one supported media file.
+        """
+        parent = filedialog.askdirectory(title='Choose parent directory')
+        if not parent:
+            return
+        parent_path = Path(parent)
+        if not parent_path.exists() or not parent_path.is_dir():
+            messagebox.showerror('Invalid folder', 'Selected path is not a directory')
+            return
+        added = 0
+        try:
+            for child in sorted(parent_path.iterdir()):
+                try:
+                    if not child.is_dir():
+                        continue
+                    # Check for at least one media file inside (non-recursive)
+                    has_media = False
+                    for p in child.iterdir():
+                        if p.is_file() and (is_image(p) or is_video(p)):
+                            has_media = True
+                            break
+                    if not has_media:
+                        continue
+                    s = str(child)
+                    if s not in self.folders_list:
+                        self.folders_list.append(s)
+                        if self.folders_listbox is not None:
+                            self.folders_listbox.insert('end', s)
+                        added += 1
+                except Exception:
+                    continue
+        except Exception as e:
+            messagebox.showerror('Error', f'Could not list subfolders: {e}')
+            return
+        # Sync single-folder field for consistency
+        if added and self.folders_list:
+            self.folder_var.set(self.folders_list[0])
+        self.append_log(f'➕ Added {added} subfolders from "{parent_path.name}"')
+        self.update_caption_preview()
+
+
+    def keep_selected_only(self):
+        """Keep only the currently selected entries in the folders list.
+        Useful when you've bulk-added and want to trim down to a few.
+        """
+        if self.folders_listbox is None:
+            return
+        try:
+            sel = list(self.folders_listbox.curselection())
+            if not sel:
+                return
+            # Build new list in the order of current selection
+            keep = []
+            for idx in sel:
+                try:
+                    keep.append(self.folders_list[idx])
+                except Exception:
+                    pass
+            self.folders_list = keep
+            # Rebuild listbox
+            self.folders_listbox.delete(0, 'end')
+            for p in self.folders_list:
+                self.folders_listbox.insert('end', p)
+            # Sync single-folder field and caption preview
+            if self.folders_list:
+                self.folder_var.set(self.folders_list[0])
+        except Exception:
+            pass
+        self.update_caption_preview()
+
+    def add_folders_recursive_dialog(self):
+        """Show a small dialog to choose parent folder, depth, and media-type filters, then add folders recursively."""
+        dlg = tk.Toplevel(self)
+        dlg.title('Recursive Folder Add')
+        dlg.transient(self)
+        dlg.grab_set()
+        dlg.resizable(False, False)
+        frm = ttk.Frame(dlg, padding=8)
+        frm.pack(fill='both', expand=True)
+
+        parent_var = tk.StringVar()
+        depth_var = tk.IntVar(value=0)  # 0 means unlimited
+        include_images_var = tk.BooleanVar(value=True)
+        include_videos_var = tk.BooleanVar(value=True)
+        min_files_var = tk.IntVar(value=1)
+        include_patterns_var = tk.StringVar(value='')  # comma-separated patterns or regexes
+        exclude_patterns_var = tk.StringVar(value='')
+        use_regex_var = tk.BooleanVar(value=False)
+        case_sensitive_var = tk.BooleanVar(value=False)
+
+        def browse_parent():
+            p = filedialog.askdirectory(title='Choose parent folder')
+            if p:
+                parent_var.set(p)
+
+        ttk.Label(frm, text='Parent folder:').grid(row=0, column=0, sticky='w')
+        ent_parent = ttk.Entry(frm, textvariable=parent_var, width=40)
+        ent_parent.grid(row=0, column=1, sticky='w')
+        ttk.Button(frm, text='Browse…', command=browse_parent).grid(row=0, column=2, padx=(6,0))
+
+        ttk.Label(frm, text='Max depth (0 = unlimited):').grid(row=1, column=0, sticky='w', pady=(6,0))
+        ttk.Entry(frm, textvariable=depth_var, width=6).grid(row=1, column=1, sticky='w', pady=(6,0))
+
+        ttk.Label(frm, text='Min media files per folder:').grid(row=2, column=0, sticky='w', pady=(6,0))
+        ttk.Entry(frm, textvariable=min_files_var, width=6).grid(row=2, column=1, sticky='w', pady=(6,0))
+
+        ttk.Checkbutton(frm, text='Include image folders', variable=include_images_var).grid(row=3, column=0, columnspan=2, sticky='w', pady=(6,0))
+        ttk.Checkbutton(frm, text='Include video folders', variable=include_videos_var).grid(row=4, column=0, columnspan=2, sticky='w')
+
+        ttk.Label(frm, text='Include name patterns (comma):').grid(row=5, column=0, sticky='w', pady=(6,0))
+        ttk.Entry(frm, textvariable=include_patterns_var, width=40).grid(row=5, column=1, columnspan=2, sticky='w', pady=(6,0))
+        ttk.Label(frm, text='Exclude name patterns (comma):').grid(row=6, column=0, sticky='w')
+        ttk.Entry(frm, textvariable=exclude_patterns_var, width=40).grid(row=6, column=1, columnspan=2, sticky='w')
+        ttk.Checkbutton(frm, text='Use regex', variable=use_regex_var).grid(row=7, column=0, sticky='w', pady=(4,0))
+        ttk.Checkbutton(frm, text='Case sensitive', variable=case_sensitive_var).grid(row=7, column=1, sticky='w', pady=(4,0))
+
+        status_var = tk.StringVar(value='')
+        ttk.Label(frm, textvariable=status_var, foreground='#555').grid(row=8, column=0, columnspan=3, sticky='w', pady=(4,0))
+
+        btn_bar = ttk.Frame(frm)
+        btn_bar.grid(row=9, column=0, columnspan=3, pady=(10,0), sticky='e')
+        ttk.Button(btn_bar, text='Cancel', command=lambda: dlg.destroy()).pack(side='right')
+
+        def run_scan():
+            parent_path = Path(parent_var.get().strip())
+            if not parent_path.exists() or not parent_path.is_dir():
+                status_var.set('Invalid parent folder')
+                return
+            max_depth = depth_var.get()
+            include_images = include_images_var.get()
+            include_videos = include_videos_var.get()
+            min_files = max(1, min_files_var.get())
+            inc_raw = include_patterns_var.get().strip()
+            exc_raw = exclude_patterns_var.get().strip()
+            use_regex = use_regex_var.get()
+            case_sensitive = case_sensitive_var.get()
+
+            def split_patterns(raw: str):
+                if not raw:
+                    return []
+                return [p.strip() for p in raw.split(',') if p.strip()]
+
+            include_list = split_patterns(inc_raw)
+            exclude_list = split_patterns(exc_raw)
+
+            # Precompile regexes if needed
+            inc_regexes = []
+            exc_regexes = []
+            flags = 0 if case_sensitive else re.IGNORECASE
+            if use_regex:
+                for pat in include_list:
+                    try:
+                        inc_regexes.append(re.compile(pat, flags))
+                    except Exception:
+                        pass
+                for pat in exclude_list:
+                    try:
+                        exc_regexes.append(re.compile(pat, flags))
+                    except Exception:
+                        pass
+
+            added = 0
+            scanned = 0
+
+            def should_scan(depth):
+                return max_depth <= 0 or depth <= max_depth
+
+            # Walk using BFS to respect depth easily
+            queue = [(parent_path, 0)]
+            while queue:
+                current, depth = queue.pop(0)
+                if not should_scan(depth):
+                    continue
+                try:
+                    # Count media files in current folder
+                    media_count = 0
+                    has_image = False
+                    has_video = False
+                    for item in current.iterdir():
+                        if item.is_file():
+                            if is_image(item):
+                                has_image = True
+                                media_count += 1
+                            elif is_video(item):
+                                has_video = True
+                                media_count += 1
+                        elif item.is_dir():
+                            # Enqueue child directory for further scanning
+                            queue.append((item, depth + 1))
+                    scanned += 1
+                    # Apply media-type & count filters first
+                    if media_count >= min_files and ((include_images and has_image) or (include_videos and has_video)):
+                        folder_name = current.name
+                        passes = True
+                        # Name include/exclude logic
+                        if use_regex:
+                            if inc_regexes:
+                                passes = any(r.search(folder_name) for r in inc_regexes)
+                            if passes and exc_regexes:
+                                if any(r.search(folder_name) for r in exc_regexes):
+                                    passes = False
+                        else:
+                            # Simple substring (case-insensitive unless case_sensitive)
+                            test_name = folder_name if case_sensitive else folder_name.lower()
+                            if include_list:
+                                inc_norm = [p if case_sensitive else p.lower() for p in include_list]
+                                passes = any(p in test_name for p in inc_norm)
+                            if passes and exclude_list:
+                                exc_norm = [p if case_sensitive else p.lower() for p in exclude_list]
+                                if any(p in test_name for p in exc_norm):
+                                    passes = False
+                        if passes:
+                            s = str(current)
+                            if s not in self.folders_list:
+                                self.folders_list.append(s)
+                                if self.folders_listbox is not None:
+                                    self.folders_listbox.insert('end', s)
+                                added += 1
+                except Exception:
+                    continue
+
+            if added and self.folders_list:
+                self.folder_var.set(self.folders_list[0])
+            self.append_log(f'🔍 Recursive add: scanned {scanned} folder(s), added {added}.')
+            self.update_caption_preview()
+            dlg.destroy()
+
+        ttk.Button(btn_bar, text='Scan & Add', command=run_scan).pack(side='right', padx=(0,6))
+
+        # Center dialog relative to parent
+        try:
+            self.update_idletasks()
+            x = self.winfo_rootx() + (self.winfo_width() // 2) - 200
+            y = self.winfo_rooty() + (self.winfo_height() // 2) - 140
+            dlg.geometry(f"520x460+{x}+{y}")
+        except Exception:
+            pass
 
 
 
@@ -1312,16 +2139,22 @@ class App(tk.Tk):
             # Keep full history for filtering
             try:
                 self.log_lines.append(log_message)
+                # cap history to avoid UI slowdown
+                if len(self.log_lines) > 5000:
+                    self.log_lines = self.log_lines[-4000:]
             except Exception:
                 pass
-            # Display filtered view in GUI
+            # Incremental display in GUI for real-time feel
             try:
                 self.log_widget.configure(state='normal')
-                self.log_widget.delete('1.0', 'end')
                 flt = (self.filter_var.get() or '').strip().lower()
-                for ln in self.log_lines:
-                    if not flt or flt in ln.lower():
-                        self.log_widget.insert('end', ln)
+                if not flt:
+                    # Fast path: just append the new line
+                    self.log_widget.insert('end', log_message)
+                else:
+                    # Append only if it matches the current filter; full rebuild happens on filter change
+                    if flt in log_message.lower():
+                        self.log_widget.insert('end', log_message)
                 self.log_widget.see('end')
                 self.log_widget.configure(state='disabled')
             except tk.TclError:
@@ -1373,8 +2206,13 @@ class App(tk.Tk):
                 # Ensure a sensible maximum
                 if t <= 0:
                     t = 1
-                self.progress['maximum'] = t
-                self.progress['value'] = min(s, t)
+                # Progress bar is optional in simplified UI
+                try:
+                    if hasattr(self, 'progress') and self.progress is not None:
+                        self.progress['maximum'] = t
+                        self.progress['value'] = min(s, t)
+                except Exception:
+                    pass
 
                 percentage = (s / t * 100) if t > 0 else 0
                 eta_text = f"ETA: {self.seconds_to_hms(eta)}" if eta and eta > 1 else 'ETA: <1s'
@@ -1556,26 +2394,89 @@ class App(tk.Tk):
         if not token:
             messagebox.showerror('Error', 'Please enter a bot token')
             return
-        
-        self.btn_start.config(state='disabled')
-        try:
-            if self.skip_validate_var.get():
-                # User chose to skip network validation
-                try:
-                    self.append_log('Skipping token validation (user opted out).')
-                except Exception:
-                    pass
-                messagebox.showinfo('Skipped', 'Token validation skipped (per setting)')
+        if self.skip_validate_var.get():
+            # User chose to skip network validation
+            try:
+                self.append_log('Skipping token validation (user opted out).')
+            except Exception:
+                pass
+            messagebox.showinfo('Skipped', 'Token validation skipped (per setting)')
+        else:
+            if self.validate_token(token):
+                messagebox.showinfo('Success', 'Bot token is valid!')
             else:
-                if self.validate_token(token):
-                    messagebox.showinfo('Success', 'Bot token is valid!')
-                else:
-                    messagebox.showerror('Error', 'Invalid bot token')
-        finally:
-            self.btn_start.config(state='normal')
+                messagebox.showerror('Error', 'Invalid bot token')
+
+    def _http_post_json(self, url: str, data: dict):
+        """Post JSON/FORM to Telegram with requests if available, else urllib. Returns parsed JSON or None."""
+        try:
+            if requests is not None:
+                r = requests.post(url, data=data, timeout=20)
+                try:
+                    return r.json()
+                except Exception:
+                    return None
+            else:
+                # urllib fallback
+                import urllib.parse
+                body = urllib.parse.urlencode(data).encode('utf-8')
+                req = urllib.request.Request(url, data=body)
+                with urllib.request.urlopen(req, timeout=20) as resp:
+                    raw = resp.read().decode('utf-8')
+                    try:
+                        return json.loads(raw)
+                    except Exception:
+                        return None
+        except Exception as e:
+            try:
+                self.append_log(f'_http_post_json error: {e}')
+            except Exception:
+                pass
+            return None
+
+    def send_test_message(self):
+        """Try sending a small test message to the configured channel to verify permissions and chat id."""
+        token = self.token_var.get().strip()
+        chat_id = self.chat_var.get().strip()
+        if not token or not chat_id:
+            messagebox.showerror('Missing', 'Please enter Bot Token and Channel ID first')
+            return
+        # Best-effort message
+        text = 'Test message from Telegram Uploader GUI'
+        api_url = f"https://api.telegram.org/bot{token}/sendMessage"
+        self.append_log('Sending test message to channel...')
+        j = self._http_post_json(api_url, {'chat_id': chat_id, 'text': text})
+        if isinstance(j, dict) and j.get('ok'):
+            messagebox.showinfo('Success', 'Test message sent. Check your channel.')
+            self.append_log('✅ Test message sent successfully')
+        else:
+            # Try to show a helpful hint
+            desc = ''
+            try:
+                if isinstance(j, dict):
+                    desc = json.dumps(j)
+            except Exception:
+                pass
+            self.append_log(f'❌ Test message failed: {desc or "unknown error"}')
+            hint = 'Ensure the bot is added as an Admin in your channel with Post Messages permission. '
+            hint += 'Also verify the Channel ID is correct (use @username for public channels or the numeric id starting with -100 for private/supergroups).'
+            messagebox.showerror('Failed', f'Could not send test message.\n\n{hint}\n\nDetails: {desc}')
 
     def start_upload(self):
+        # Determine initial folder (single or multi selection)
         folder = self.folder_var.get().strip()
+        if self.folders_list:
+            # Initialize multi-mode sequence if more than one folder
+            if len(self.folders_list) > 1:
+                self.multi_mode = True
+                # Remaining folders queue (Path objects)
+                self.remaining_folders = [Path(p) for p in self.folders_list]
+                folder_path_obj = self.remaining_folders.pop(0)
+                folder = str(folder_path_obj)
+            else:
+                self.multi_mode = False
+                self.remaining_folders = []
+                folder = self.folders_list[0]
         token = self.token_var.get().strip()
         chat_id = self.chat_var.get().strip()
 
@@ -1605,8 +2506,11 @@ class App(tk.Tk):
                 return
 
         # Reset UI state
-        self.btn_start.config(state='disabled')
-        self.btn_stop.config(state='normal')
+        try:
+            self.btn_start.config(state='disabled')
+            self.btn_stop.config(state='normal')
+        except Exception:
+            pass
         self.stop_event.clear()
         
         # Clear log & in-memory list
@@ -1615,10 +2519,14 @@ class App(tk.Tk):
         self.log_widget.configure(state='disabled')
         self.log_lines.clear()
         
-        # Reset progress bar and status
-        self.progress['value'] = 0
-        self.progress['maximum'] = 100
+        # Reset status & progress
         self.status_var.set('Starting upload...')
+        try:
+            if hasattr(self, 'progress') and self.progress:
+                self.progress['value'] = 0
+                self.progress['maximum'] = 100
+        except Exception:
+            pass
 
         self.worker = UploadWorker(
             folder=fpath,
@@ -1644,17 +2552,74 @@ class App(tk.Tk):
         self.start_time_epoch = time.time()
         self.worker.start()
 
+    def _start_next_folder(self):
+        """Internal helper to start uploading the next folder in multi-mode."""
+        if not self.multi_mode or not self.remaining_folders:
+            # Nothing left
+            self.multi_mode = False
+            return
+        if self.stop_event.is_set():
+            self.multi_mode = False
+            return
+        next_folder = self.remaining_folders.pop(0)
+        self.folder_var.set(str(next_folder))
+        self.append_log(f'➡️ Moving to next folder: {next_folder.name}')
+        # Reuse existing token/chat settings
+        # Reset status & progress
+        self.status_var.set('Starting upload...')
+        try:
+            if hasattr(self, 'progress') and self.progress:
+                self.progress['value'] = 0
+                self.progress['maximum'] = 100
+        except Exception:
+            pass
+        # Create new worker
+        self.worker = UploadWorker(
+            folder=next_folder,
+            token=self.token_var.get().strip(),
+            chat_id=self.chat_var.get().strip(),
+            as_document=self.as_doc_var.get(),
+            no_album=self.no_album_var.get(),
+            delay=self.delay_var.get(),
+            jitter=self.jitter_var.get(),
+            resume=self.resume_var.get(),
+            delete_after_upload=self.delete_after_upload_var.get(),
+            max_workers=self.max_workers_var.get(),
+            progress_callback=self.progress_cb,
+            log_callback=self.append_log,
+            done_callback=self.upload_done,
+            stop_event=self.stop_event,
+            include_link=self.include_link_var.get(),
+            channel_link=self.channel_link_var.get().strip(),
+            use_custom_caption=self.use_custom_caption_var.get(),
+            custom_caption=(self.custom_caption_text.get('1.0', 'end-1c').strip() if self.custom_caption_text is not None else self.custom_caption_var.get().strip())
+        )
+        self.start_time_epoch = time.time()
+        self.worker.start()
+
     def stop_upload(self):
         if messagebox.askyesno('Stop', 'Stop the upload? This will save progress and stop.'):
             self.stop_event.set()
-            self.btn_stop.config(state='disabled')
+            try:
+                self.btn_stop.config(state='disabled')
+            except Exception:
+                pass
             self.append_log('Stop requested — waiting for worker to finish...')
 
     def upload_done(self, success: bool):
         self.append_log('Upload finished' if success else 'Upload stopped / failed')
-        self.btn_start.config(state='normal')
-        self.btn_stop.config(state='disabled')
+        # If multi-mode and success and folders remain, chain next
+        if self.multi_mode and success and not self.stop_event.is_set() and self.remaining_folders:
+            self._start_next_folder()
+            return
+        # Finalize
+        try:
+            self.btn_start.config(state='normal')
+            self.btn_stop.config(state='disabled')
+        except Exception:
+            pass
         self.start_time_epoch = None
+        self.multi_mode = False
         # Emit structured completion event
         try:
             event = {
@@ -1696,17 +2661,49 @@ class App(tk.Tk):
                 messagebox.showerror('Error', f'Failed to load settings: {e}')
 
     def toggle_advanced(self):
+        # Backwards compatibility: map old toggle to collapsing the advanced section.
         try:
-            self.advanced_visible = not self.advanced_visible
-            if self.advanced_visible:
-                self.btn_adv_toggle.config(text='Hide Advanced ▴')
-                # Show advanced frame if we add content later
-                if self.advanced_frame.winfo_manager() == '':
-                    self.advanced_frame.pack(fill='x', padx=8, pady=4)
-            else:
-                self.btn_adv_toggle.config(text='Show Advanced ▾')
-                if self.advanced_frame.winfo_manager() != '':
-                    self.advanced_frame.forget()
+            if hasattr(self, 'sec_advanced') and self.sec_advanced:
+                if self.sec_advanced._collapsed:
+                    self.sec_advanced.expand()
+                else:
+                    self.sec_advanced.collapse()
+        except Exception:
+            pass
+
+    def expand_all_sections(self):
+        """Expand all collapsible option sections (folders, caption)."""
+        try:
+            if hasattr(self, 'sec_folders') and self.sec_folders:
+                self.sec_folders.expand()
+        except Exception:
+            pass
+        try:
+            if hasattr(self, 'sec_caption') and self.sec_caption:
+                self.sec_caption.expand()
+        except Exception:
+            pass
+        try:
+            if hasattr(self, 'sec_advanced') and self.sec_advanced:
+                self.sec_advanced.expand()
+        except Exception:
+            pass
+
+    def collapse_all_sections(self):
+        """Collapse all collapsible option sections (folders, caption)."""
+        try:
+            if hasattr(self, 'sec_folders') and self.sec_folders:
+                self.sec_folders.collapse()
+        except Exception:
+            pass
+        try:
+            if hasattr(self, 'sec_caption') and self.sec_caption:
+                self.sec_caption.collapse()
+        except Exception:
+            pass
+        try:
+            if hasattr(self, 'sec_advanced') and self.sec_advanced:
+                self.sec_advanced.collapse()
         except Exception:
             pass
 
