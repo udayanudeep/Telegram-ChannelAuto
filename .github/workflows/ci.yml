@@ -41,7 +41,7 @@ jobs:
           import sys
           # Avoid Tk dependency on headless runner; just validate constants.
           from pathlib import Path
-          print('Smoke constants:', len(Path('.').iterdir()) > 0)
+          print('Smoke constants:', any(Path('.').iterdir()))
           PY
 
   macos-build:
