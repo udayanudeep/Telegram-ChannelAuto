@@ -1,0 +1,153 @@
+name: CI
+
+on:
+  push:
+    branches: [ main ]
+    tags:
+      - 'v*'
+  pull_request:
+    branches: [ main ]
+  workflow_dispatch:
+
+jobs:
+  python-smoke:
+    name: Python smoke test
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install deps
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install requests
+      - name: Compile & import
+        run: |
+          python -m py_compile telegram_uploader_gui_python.py
+          python - <<'PY'
+          import importlib.util, sys, pathlib
+          p = pathlib.Path('telegram_uploader_gui_python.py')
+          spec = importlib.util.spec_from_file_location('tg', p)
+          m = importlib.util.module_from_spec(spec)
+          spec.loader.exec_module(m)
+          print('IMPORT_OK')
+          PY
+      - name: Basic runtime check (no GUI)
+        run: |
+          python - <<'PY'
+          import sys
+          # Avoid Tk dependency on headless runner; just validate constants.
+          from pathlib import Path
+          print('Smoke constants:', len(Path('.').iterdir()) > 0)
+          PY
+
+  macos-build:
+    name: macOS universal build
+    runs-on: macos-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Build app & dmg
+        run: |
+          set -e
+          cd TelegramUploader_Mac
+          ./build_mac_app.sh
+      - name: Compress .app for artifact
+        run: |
+          cd TelegramUploader_Mac
+          ditto -c -k --sequesterRsrc --keepParent TelegramUploader.app TelegramUploader.app.zip
+          if [ -d TelegramUploader-Lite.app ]; then
+            ditto -c -k --sequesterRsrc --keepParent TelegramUploader-Lite.app TelegramUploader-Lite.app.zip
+          fi
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: telegram-uploader-mac
+          path: |
+            TelegramUploader_Mac/TelegramUploader.app.zip
+            TelegramUploader_Mac/TelegramUploader.dmg
+            TelegramUploader_Mac/TelegramUploader-Lite.app.zip
+            TelegramUploader_Mac/TelegramUploader-Lite.dmg
+          retention-days: 14
+      - name: Show codesign status (unsigned expected)
+        run: |
+          codesign -dv TelegramUploader_Mac/TelegramUploader.app 2>&1 || echo 'Not signed (expected)'
+
+  release-draft:
+    name: Draft release from tag
+    needs: [python-smoke, macos-build]
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/v')
+    steps:
+      - name: Checkout (full history for changelog)
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Download build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: telegram-uploader-mac
+          path: release_bundle
+      - name: Generate checksums
+        run: |
+          cd release_bundle
+          sha256sum TelegramUploader.app.zip > TelegramUploader.app.zip.sha256
+          sha256sum TelegramUploader.dmg > TelegramUploader.dmg.sha256
+          if [ -f TelegramUploader-Lite.app.zip ]; then sha256sum TelegramUploader-Lite.app.zip > TelegramUploader-Lite.app.zip.sha256; fi
+          if [ -f TelegramUploader-Lite.dmg ]; then sha256sum TelegramUploader-Lite.dmg > TelegramUploader-Lite.dmg.sha256; fi
+          ls -l
+      - name: Generate CHANGELOG.md
+        run: |
+          set -euo pipefail
+          CURRENT_TAG="${GITHUB_REF_NAME}"
+          # Attempt to find previous tag; fallback to empty (shows only current tag commits)
+          PREV_TAG=$(git tag --sort=-creatordate | awk -v cur="$CURRENT_TAG" 'found{print; exit} $0==cur{found=1}' )
+          if [ -n "$PREV_TAG" ]; then RANGE="$PREV_TAG..$CURRENT_TAG"; else RANGE="$CURRENT_TAG"; fi
+          echo "Generating changelog for range: $RANGE"
+          {
+            echo "# Changelog for $CURRENT_TAG"
+            echo "Date: $(date -u +%Y-%m-%d)"
+            echo
+            echo "## Changes"
+            git log --no-merges --pretty=format:'- %s (%h)' $RANGE || echo "(no commits found)"
+            echo
+          } > release_bundle/CHANGELOG.md
+      - name: Compose release notes
+        run: |
+          APP_SHA=$(cut -d ' ' -f1 release_bundle/TelegramUploader.app.zip.sha256)
+          DMG_SHA=$(cut -d ' ' -f1 release_bundle/TelegramUploader.dmg.sha256)
+          LITE_APP_SHA=$(test -f release_bundle/TelegramUploader-Lite.app.zip.sha256 && cut -d ' ' -f1 release_bundle/TelegramUploader-Lite.app.zip.sha256 || echo "-")
+          LITE_DMG_SHA=$(test -f release_bundle/TelegramUploader-Lite.dmg.sha256 && cut -d ' ' -f1 release_bundle/TelegramUploader-Lite.dmg.sha256 || echo "-")
+          {
+            echo "## Telegram Uploader ${GITHUB_REF_NAME}"
+            echo
+            echo "### Checksums (SHA-256)"
+            echo "- TelegramUploader.app.zip: ${APP_SHA}"
+            echo "- TelegramUploader.dmg: ${DMG_SHA}"
+            echo "- TelegramUploader-Lite.app.zip: ${LITE_APP_SHA}"
+            echo "- TelegramUploader-Lite.dmg: ${LITE_DMG_SHA}"
+            echo
+            echo "### Changelog"
+            sed '1,2d' release_bundle/CHANGELOG.md || cat release_bundle/CHANGELOG.md
+          } > release_bundle/RELEASE_NOTES.md
+      - name: Create draft release
+        uses: softprops/action-gh-release@v2
+        with:
+          draft: true
+          body_path: release_bundle/RELEASE_NOTES.md
+          files: |
+            release_bundle/TelegramUploader.app.zip
+            release_bundle/TelegramUploader.dmg
+            release_bundle/TelegramUploader-Lite.app.zip
+            release_bundle/TelegramUploader-Lite.dmg
+            release_bundle/TelegramUploader.app.zip.sha256
+            release_bundle/TelegramUploader.dmg.sha256
+            release_bundle/TelegramUploader-Lite.app.zip.sha256
+            release_bundle/TelegramUploader-Lite.dmg.sha256
+            release_bundle/CHANGELOG.md
+          name: Telegram Uploader ${{ github.ref_name }}
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

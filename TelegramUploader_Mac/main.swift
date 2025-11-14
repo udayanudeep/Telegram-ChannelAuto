@@ -53,6 +53,9 @@ final class UploadController: ObservableObject {
     @Published var skipValidate: Bool = false
     @Published var useCustomCaption: Bool = false
     @Published var customCaption: String = ""
+    // Instagram quick fetch
+    @Published var instaUsername: String = ""
+    @Published var instaDays: Int = 7
 
     private let tokensStoreURL: URL = {
         let p = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".telegram_uploader_tokens.json")
@@ -195,6 +198,50 @@ final class UploadController: ObservableObject {
         runNextFolder(preferredPython: python)
     }
 
+    func startInstagramFetch() {
+        // Headless Instagram fetch + upload via CLI flags
+        guard !isRunning else { return }
+        let user = instaUsername.trimmingCharacters(in: .whitespacesAndNewlines)
+        let tok = token.trimmingCharacters(in: .whitespacesAndNewlines)
+        let ch = channel.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !user.isEmpty else { appendLog("⚠️ Enter Instagram username"); return }
+        guard !tok.isEmpty && !ch.isEmpty else { appendLog("⚠️ Enter Bot Token and Channel ID"); return }
+        var args: [String] = ["--insta-username", user, "--insta-days", String(max(1, instaDays)), "--token", tok, "--channel", ch]
+        let link = captionLink.trimmingCharacters(in: .whitespacesAndNewlines)
+        if includeLink && !link.isEmpty {
+            args += ["--include-link", "--link", link]
+        }
+        if skipValidate { args += ["--skip-validate"] }
+        runPython(withArgs: args, preferredPython: resolvePythonExecutable())
+    }
+
+    func startInstagramFetch(fromFile path: String) {
+        guard !isRunning else { return }
+        let tok = token.trimmingCharacters(in: .whitespacesAndNewlines)
+        let ch = channel.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !tok.isEmpty && !ch.isEmpty else { appendLog("⚠️ Enter Bot Token and Channel ID"); return }
+        let expanded = NSString(string: path).expandingTildeInPath
+        var args: [String] = ["--insta-file", expanded, "--insta-days", String(max(1, instaDays)), "--token", tok, "--channel", ch]
+        let link = captionLink.trimmingCharacters(in: .whitespacesAndNewlines)
+        if includeLink && !link.isEmpty {
+            args += ["--include-link", "--link", link]
+        }
+        if skipValidate { args += ["--skip-validate"] }
+        runPython(withArgs: args, preferredPython: resolvePythonExecutable())
+    }
+
+    func chooseUsernamesFileAndStart() {
+        let panel = NSOpenPanel()
+        panel.canChooseFiles = true
+        panel.canChooseDirectories = false
+        panel.allowsMultipleSelection = false
+        panel.allowedContentTypes = [.plainText]
+        panel.prompt = "Select"
+        if panel.runModal() == .OK, let url = panel.url {
+            startInstagramFetch(fromFile: url.path)
+        }
+    }
+
     private func runPython(withArgs: [String], preferredPython: String? = nil, clearLogs: Bool = true) {
         guard !isRunning else { return }
         if clearLogs { logLines.removeAll() }
@@ -214,6 +261,18 @@ final class UploadController: ObservableObject {
     env["TK_SILENCE_DEPRECATION"] = "1"
     // Disable ttkbootstrap inside the bundled app to avoid incompatibilities
     env["DISABLE_TTKBOOTSTRAP"] = "1"
+    // Allow the Python script to auto-install optional runtime deps like instaloader when missing
+    #if LITE_BUILD
+    // Lite build: do not auto-install at runtime; keep environment clean
+    // env["ALLOW_RUNTIME_PIP"] intentionally not set
+    // env["PIP_BREAK_SYSTEM_PACKAGES"] intentionally not set
+    env["APP_VARIANT"] = "lite"
+    #else
+    env["ALLOW_RUNTIME_PIP"] = "1"
+    // On Homebrew/PEP 668 environments, permit user install to proceed
+    env["PIP_BREAK_SYSTEM_PACKAGES"] = "1"
+    env["APP_VARIANT"] = "full"
+    #endif
     task.environment = env
         let outPipe = Pipe(); let errPipe = Pipe()
         self.stdoutPipe = outPipe; self.stderrPipe = errPipe
@@ -434,7 +493,7 @@ final class UploadController: ObservableObject {
 
 // MARK: - Content View
 struct ContentView: View {
-    @StateObject private var vm = UploadController()
+    @EnvironmentObject private var vm: UploadController
     @State private var selectedToken: String = ""
     @State private var selectedChannel: String = ""
     @Environment(\.colorScheme) var colorScheme
@@ -573,6 +632,14 @@ struct ContentView: View {
                     }
                 }.padding(.top, 6)
             }
+            // Instagram quick-fetch row (headless)
+            HStack(spacing: 12) {
+                TextField("Instagram username", text: $vm.instaUsername)
+                    .textFieldStyle(.roundedBorder)
+                Button("Fetch & Upload (7 days)") { vm.startInstagramFetch() }
+                    .disabled(vm.instaUsername.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || vm.token.isEmpty || vm.channel.isEmpty || vm.isRunning)
+                    .buttonStyle(.borderedProminent)
+            }
         }
     }
 
@@ -662,12 +729,22 @@ struct ContentView: View {
 // we separate the true entry point into a thin @main struct below with no top-level side effects.
 @main
 struct TelegramUploaderGlassApp: App {
+    @StateObject private var vm = UploadController()
     var body: some Scene {
         WindowGroup {
             ContentView()
+                .environmentObject(vm)
                 .frame(minWidth: 760, minHeight: 560)
         }
         .windowStyle(.automatic)
+        .commands {
+            CommandMenu("File") {
+                Button("Fetch & Upload from Usernames File…") {
+                    vm.chooseUsernamesFileAndStart()
+                }
+                .keyboardShortcut("f", modifiers: [.command, .shift])
+            }
+        }
     }
 }
 

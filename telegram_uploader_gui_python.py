@@ -33,11 +33,14 @@ import random
 import threading
 import re
 import math
+import tempfile
+import shutil
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox, simpledialog
 import tkinter.font as tkfont
-from typing import List, Dict
+from typing import List, Dict, Optional, Any, Callable, Tuple
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from queue import Queue
 import urllib.request
@@ -85,7 +88,7 @@ def detect_dark_mode() -> bool:
     except Exception:
         return False
 
-from typing import Optional, Any
+# Note: Optional and Any imported at module level
 
 class Tooltip:
     def __init__(self, widget: tk.Widget, text: str, delay: int = 400):
@@ -284,6 +287,212 @@ def ensure_requests_available() -> bool:
         except Exception as e2:
             print(f'[ERROR] Auto-install of requests failed: {e2}')
             return False
+
+def sanitize_for_path(name: str, maxlen: int = 50) -> str:
+    """Sanitize arbitrary user-provided strings for safe filesystem paths.
+    - Keeps letters, digits, dot, underscore, hyphen
+    - Replaces other runs with a single underscore
+    - Trims to maxlen and strips leading/trailing underscores/dots
+    - Falls back to 'user' if empty
+    """
+    try:
+        s = name.strip().replace('\n', ' ').replace('\r', ' ')
+        # collapse whitespace
+        s = re.sub(r"\s+", " ", s)
+        # replace disallowed chars with underscore
+        s = re.sub(r"[^A-Za-z0-9._-]+", "_", s)
+        # collapse multiple underscores
+        s = re.sub(r"_+", "_", s)
+        s = s.strip("._")
+        if not s:
+            s = 'user'
+        if len(s) > maxlen:
+            s = s[:maxlen].rstrip("._-") or 'user'
+        return s
+    except Exception:
+        return 'user'
+
+def ensure_instaloader_available() -> bool:
+    """Ensure the instaloader library is importable. Attempts auto-install if allowed.
+    Returns True if available, False otherwise.
+    """
+    try:
+        import instaloader  # type: ignore  # noqa: F401
+        return True
+    except Exception:
+        pass
+    if os.environ.get('ALLOW_RUNTIME_PIP') != '1':
+        return False
+    try:
+        print('[INFO] Attempting to auto-install instaloader to user site...')
+        subprocess.run([sys.executable, '-m', 'pip', 'install', '--user', 'instaloader'], check=False, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        # ensure user site on sys.path
+        try:
+            up = site.getusersitepackages()
+            if up and up not in sys.path:
+                sys.path.append(up)
+        except Exception:
+            pass
+        import instaloader  # type: ignore  # noqa: F401
+        print('[INFO] Auto-installed instaloader in user site successfully.')
+        return True
+    except Exception as e:
+        # Retry with PEP 668 override commonly needed on Homebrew Python
+        try:
+            print('[WARN] User-site install failed; attempting pip install with --break-system-packages (user)…')
+            subprocess.run([sys.executable, '-m', 'pip', 'install', '--user', '--break-system-packages', 'instaloader'], check=False, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+            try:
+                up = site.getusersitepackages()
+                if up and up not in sys.path:
+                    sys.path.append(up)
+            except Exception:
+                pass
+            import instaloader  # type: ignore  # noqa: F401
+            print('[INFO] Auto-installed instaloader with break-system-packages.')
+            return True
+        except Exception:
+            try:
+                print('[WARN] Break-system-packages attempt failed; trying standard pip install (may be blocked)…')
+                subprocess.run([sys.executable, '-m', 'pip', 'install', 'instaloader'], check=False, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+                import instaloader  # type: ignore  # noqa: F401
+                print('[INFO] Auto-installed instaloader successfully.')
+                return True
+            except Exception as e2:
+                print(f'[ERROR] Auto-install of instaloader failed: {e2}')
+                return False
+
+def download_instagram_images(username: str, days: int, out_dir: Path, log: Optional[Callable[[str], None]] = None) -> List[Path]:
+    """Download latest Instagram images for a public username within the last `days` days.
+    Skips videos and returns list of downloaded image Paths. If INSTAGRAM_USER/PASS are set,
+    attempts login for private accounts.
+    """
+    def _log(*args: Any) -> None:
+        try:
+            if callable(log):
+                log(' '.join(map(str, args)))
+            else:
+                print('[IG]', *args)
+        except Exception:
+            pass
+
+    try:
+        import instaloader as _instaloader  # type: ignore
+    except Exception:
+        raise RuntimeError('instaloader is not available')
+
+    out_dir.mkdir(parents=True, exist_ok=True)
+    # Use getattr to avoid static type-checker complaints when stubs are missing
+    L = getattr(_instaloader, 'Instaloader')(download_comments=False, save_metadata=False, post_metadata_txt_pattern='')
+    ig_user = os.environ.get('INSTAGRAM_USER')
+    ig_pass = os.environ.get('INSTAGRAM_PASS')
+    if ig_user and ig_pass:
+        try:
+            _log('Logging into Instagram account for private content access...')
+            L.login(ig_user, ig_pass)
+        except Exception as e:
+            _log('Login failed, proceeding without login:', e)
+    # Resolve profile
+    try:
+        Profile = getattr(_instaloader, 'Profile')
+        profile = Profile.from_username(L.context, username)
+    except Exception as e:
+        raise RuntimeError(f'Failed to load Instagram profile "{username}": {e}')
+
+    cutoff = datetime.now(timezone.utc) - timedelta(days=max(1, int(days)))
+    downloaded: List[Path] = []
+    count_posts = 0
+    max_attempts = 3
+    attempt = 0
+    while attempt < max_attempts:
+        try:
+            for post in profile.get_posts():
+                try:
+                    count_posts += 1
+                    if post.date_utc.replace(tzinfo=timezone.utc) < cutoff:
+                        raise StopIteration
+                    # skip videos if any
+                    if getattr(post, 'is_video', False):
+                        continue
+                    # sidecar (carousel)
+                    images: List[Tuple[str, str]] = []  # list of (url, suffix)
+                    try:
+                        if post.typename == 'GraphSidecar':
+                            for i, node in enumerate(post.get_sidecar_nodes()):
+                                try:
+                                    if getattr(node, 'is_video', False):
+                                        continue
+                                    url = getattr(node, 'display_url', None) or getattr(node, 'url', None)
+                                    if url:
+                                        images.append((url, f'_{i+1}'))
+                                except Exception:
+                                    continue
+                        else:
+                            url = getattr(post, 'url', None)
+                            if url:
+                                images.append((url, ''))
+                    except Exception:
+                        # best effort: use main url
+                        url = getattr(post, 'url', None)
+                        if url:
+                            images.append((url, ''))
+
+                    if not images:
+                        continue
+
+                    for url, suf in images:
+                        try:
+                            # download via requests for tighter control
+                            if requests is None and not ensure_requests_available():
+                                raise RuntimeError('requests not available')
+                            # import requests module locally to appease type checkers
+                            import importlib as _importlib
+                            _req = _importlib.import_module('requests')
+                            fn = f"{post.date_utc.strftime('%Y%m%d_%H%M%S')}{suf}.jpg"
+                            dest = out_dir / fn
+                            if dest.exists() and dest.stat().st_size > 0:
+                                downloaded.append(dest)
+                                continue
+                            r = _req.get(url, timeout=45)
+                            r.raise_for_status()
+                            with open(dest, 'wb') as f:
+                                f.write(r.content)
+                            downloaded.append(dest)
+                        except Exception as e:
+                            _log('Failed to fetch image:', url, e)
+                            # Backoff on any image fetch error (rate limits, transient network)
+                            try:
+                                wait_s = random.randint(30, 60)
+                                _log(f'Waiting {wait_s}s before continuing due to image error…')
+                                time.sleep(wait_s)
+                            except Exception:
+                                pass
+                    # Be polite: tiny delay
+                    time.sleep(0.5)
+                except StopIteration:
+                    # clean stop when cutoff reached
+                    raise
+                except Exception:
+                    continue
+            # Completed iteration without fatal errors
+            break
+        except StopIteration:
+            # Normal completion due to cutoff time
+            break
+        except Exception as e:
+            attempt += 1
+            if attempt < max_attempts:
+                wait_s = random.randint(30, 60)
+                _log(f'Instagram fetch error for @{username}: {e}. Waiting {wait_s}s before retry {attempt}/{max_attempts}…')
+                try:
+                    time.sleep(wait_s)
+                except Exception:
+                    pass
+                continue
+            else:
+                _log(f'Giving up fetching @{username} after {max_attempts} attempts: {e}')
+                break
+    _log(f'Downloaded {len(downloaded)} images from @{username} (scanned {count_posts} posts).')
+    return downloaded
 
 def ensure_ttkthemes_available() -> bool:
     """Ensure ttkthemes is importable. Attempts user-site install first.
@@ -1082,6 +1291,8 @@ class App(tk.Tk):
         self.elapsed_var = tk.StringVar(value='Elapsed: 0s')
         self.filter_var = tk.StringVar(value='')
         self.caption_count_var = tk.StringVar(value='0/1024')
+        # Instagram integration
+        self.insta_user_var = tk.StringVar(value='')
         self.log_lines = []
         self.advanced_visible = True
         self.start_time_epoch = None
@@ -1090,6 +1301,8 @@ class App(tk.Tk):
         self.folders_list = []
         self.folders_listbox = None  # set in create_widgets
         self.multi_mode = False
+        # Flag: when multi-folder upload is triggered by Instagram fetch, pause between users
+        self.multi_mode_instagram = False
         self.remaining_folders = []
         self.multi_success = True
         
@@ -1486,6 +1699,14 @@ class App(tk.Tk):
             self.progress['value'] = 0
         except Exception:
             pass
+
+        # Instagram quick-fetch row
+        insta_row = ttk.Frame(self)
+        insta_row.pack(fill='x', padx=pad, pady=(6, 0))
+        insta_row.columnconfigure(1, weight=1)
+        ttk.Label(insta_row, text='Instagram username:').grid(row=0, column=0, sticky='w')
+        ttk.Entry(insta_row, textvariable=self.insta_user_var).grid(row=0, column=1, sticky='ew')
+        self.make_button(insta_row, text='Fetch & Upload (7 days)', command=self.fetch_instagram_and_upload, role='primary').grid(row=0, column=2, padx=(6,0))
 
         # Logs section
         frm_log = ttk.Frame(self)
@@ -2463,6 +2684,15 @@ class App(tk.Tk):
             messagebox.showerror('Failed', f'Could not send test message.\n\n{hint}\n\nDetails: {desc}')
 
     def start_upload(self):
+        # If no folder selected but Instagram username is provided, trigger fetch flow
+        try:
+            if not (self.folder_var.get() or '').strip() and (self.insta_user_var.get() or '').strip():
+                # This will set the folder and then call start_upload again when done
+                self.fetch_instagram_and_upload()
+                return
+        except Exception:
+            pass
+
         # Determine initial folder (single or multi selection)
         folder = self.folder_var.get().strip()
         if self.folders_list:
@@ -2610,7 +2840,18 @@ class App(tk.Tk):
         self.append_log('Upload finished' if success else 'Upload stopped / failed')
         # If multi-mode and success and folders remain, chain next
         if self.multi_mode and success and not self.stop_event.is_set() and self.remaining_folders:
-            self._start_next_folder()
+            # If initiated by Instagram flow, sleep 30s before proceeding to next username
+            if getattr(self, 'multi_mode_instagram', False):
+                try:
+                    self.append_log('⏳ Sleeping 30s before next username...')
+                except Exception:
+                    pass
+                try:
+                    self.after(30000, self._start_next_folder)
+                except Exception:
+                    self._start_next_folder()
+            else:
+                self._start_next_folder()
             return
         # Finalize
         try:
@@ -2620,6 +2861,10 @@ class App(tk.Tk):
             pass
         self.start_time_epoch = None
         self.multi_mode = False
+        try:
+            self.multi_mode_instagram = False
+        except Exception:
+            pass
         # Emit structured completion event
         try:
             event = {
@@ -2735,6 +2980,90 @@ class App(tk.Tk):
             except Exception:
                 pass
 
+    def fetch_instagram_and_upload(self):
+        """Fetch latest images from Instagram for one or more usernames (last 7 days) and upload to channel.
+        Accepts comma, space, or newline separated usernames in the text field.
+        """
+        raw = (self.insta_user_var.get() or '')
+        # Split by commas/whitespace/newlines, strip @ and invalid chars
+        parts = [p for p in re.split(r"[\s,]+", raw) if p]
+        users_fetch = []
+        for p in parts:
+            u = re.sub(r"[^A-Za-z0-9._]", "", p.strip().lstrip('@'))
+            if u:
+                users_fetch.append(u)
+        # Dedupe while preserving order
+        seen = set()
+        users_fetch = [u for u in users_fetch if not (u in seen or seen.add(u))]
+
+        token = self.token_var.get().strip()
+        chat_id = self.chat_var.get().strip()
+        if not users_fetch:
+            messagebox.showerror('Missing', 'Please enter at least one Instagram username.')
+            return
+        if not token or not chat_id:
+            messagebox.showerror('Missing', 'Bot Token and Channel ID are required')
+            return
+        if not self.skip_validate_var.get():
+            if not self.validate_token(token):
+                messagebox.showerror('Error', 'Invalid bot token')
+                return
+
+        # Run fetch in background to keep UI responsive
+        def worker():
+            try:
+                self.append_log(f'⬇️ Fetching Instagram images for {len(users_fetch)} user(s) (last 7 days)...')
+                if not ensure_instaloader_available():
+                    self.append_log('instaloader not available. Set ALLOW_RUNTIME_PIP=1 and retry or install it: pip install instaloader')
+                    try:
+                        messagebox.showerror('Dependency missing', 'instaloader is required. Install it or enable ALLOW_RUNTIME_PIP=1 for auto-install.')
+                    except Exception:
+                        pass
+                    return
+                base = Path.home() / '.telegram_uploader' / 'instagram'
+                base.mkdir(parents=True, exist_ok=True)
+                folders: List[str] = []
+                for u in users_fetch:
+                    safe = sanitize_for_path(u)
+                    # Use stable folder name equal to the Instagram ID (sanitized)
+                    out_dir = base / safe
+                    self.append_log(f'  • @{u}: downloading...')
+                    try:
+                        imgs = download_instagram_images(u, 7, out_dir, log=self.append_log)
+                        if imgs:
+                            self.append_log(f'  • @{u}: {len(imgs)} images')
+                            folders.append(str(out_dir))
+                        else:
+                            self.append_log(f'  • @{u}: no images found in the last 7 days (or private).')
+                    except Exception as e:
+                        self.append_log(f'  • @{u}: error {e}')
+                if not folders:
+                    try:
+                        messagebox.showinfo('No images', 'No images found for any provided user in the last 7 days.')
+                    except Exception:
+                        pass
+                    return
+                self.append_log(f'Fetched folders: {len(folders)}. Starting upload...')
+                def start_for_folders():
+                    try:
+                        # Replace folder list and kick off multi-folder upload
+                        self.folders_list = folders[:]
+                        # Mark this sequence as Instagram-driven so we can sleep between users
+                        self.multi_mode_instagram = True
+                        if self.folders_listbox is not None:
+                            self.folders_listbox.delete(0, 'end')
+                            for p in self.folders_list:
+                                self.folders_listbox.insert('end', p)
+                        self.folder_var.set(self.folders_list[0])
+                        self.start_upload()
+                    except Exception as e:
+                        self.append_log(f'Failed to start upload for Instagram folders: {e}')
+                self.after(0, start_for_folders)
+            except Exception as e:
+                self.append_log(f'Instagram fetch error: {e}')
+
+        threading.Thread(target=worker, daemon=True).start()
+
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='Telegram Uploader GUI/CLI')
@@ -2753,11 +3082,170 @@ if __name__ == '__main__':
     parser.add_argument('--use-custom-caption', action='store_true', help='Use custom caption as base')
     parser.add_argument('--custom-caption', type=str, default='', help='Custom caption text')
     parser.add_argument('--skip-validate', action='store_true', help='Skip bot token validation')
+    # Instagram integration (headless)
+    parser.add_argument('--insta-username', type=str, help='Instagram username(s) to fetch (comma/space separated)')
+    parser.add_argument('--insta-file', type=str, help='Path to a text file with one Instagram username per line')
+    parser.add_argument('--insta-days', type=int, default=7, help='Number of days to look back for Instagram images')
 
     args, unknown = parser.parse_known_args()
 
-    # If CLI core args are provided, run headless; otherwise, launch GUI
-    if args.folder and args.token and args.channel:
+    # If CLI core args are provided (folder or instagram), run headless; otherwise, launch GUI
+    effective_folder = args.folder
+    # If no folder but insta username(s)/file provided, fetch images first
+    if not effective_folder and (args.insta_username or args.insta_file) and args.token and args.channel:
+        # Ensure instaloader
+        if not ensure_instaloader_available():
+            print('[ERROR] instaloader library missing and auto-install failed. Install with: pip install instaloader', flush=True)
+            sys.exit(2)
+        # Prepare output folder under user cache
+        base = Path.home() / '.telegram_uploader' / 'instagram'
+        base.mkdir(parents=True, exist_ok=True)
+        # Build list of usernames from flag and optional file
+        users: List[str] = []
+        if args.insta_username:
+            for p in re.split(r"[\s,]+", args.insta_username):
+                p = (p or '').strip()
+                if not p:
+                    continue
+                u = re.sub(r"[^A-Za-z0-9._]", "", p.lstrip('@'))
+                if u and u not in users:
+                    users.append(u)
+        if args.insta_file:
+            try:
+                content = Path(args.insta_file).expanduser().read_text(encoding='utf-8', errors='ignore')
+                for line in content.splitlines():
+                    s = line.strip()
+                    if not s or s.startswith('#'):
+                        continue
+                    u = re.sub(r"[^A-Za-z0-9._]", "", s.lstrip('@'))
+                    if u and u not in users:
+                        users.append(u)
+            except Exception as e:
+                print(f"[ERROR] Failed to read insta-file: {e}", flush=True)
+                sys.exit(2)
+        if not users:
+            print('[ERROR] No valid Instagram usernames provided.', flush=True)
+            sys.exit(1)
+        folders_to_upload: List[str] = []
+        for u in users:
+            safe = sanitize_for_path(u)
+            # Use stable folder name equal to the Instagram ID (sanitized)
+            out_dir = base / safe
+            print(f"[INFO] Fetching @{u} for last {int(args.insta_days)} day(s) -> {out_dir}", flush=True)
+            try:
+                imgs = download_instagram_images(u, int(args.insta_days), out_dir, log=lambda m: print(m, flush=True))
+                if imgs:
+                    print(f"[INFO] @{u}: downloaded {len(imgs)} images", flush=True)
+                    folders_to_upload.append(str(out_dir))
+                else:
+                    print(f"[WARN] @{u}: no images found in the requested window", flush=True)
+            except Exception as e:
+                print(f"[ERROR] @{u}: fetch failed: {e}", flush=True)
+        if not folders_to_upload:
+            print('[WARN] No images found for any provided Instagram user.', flush=True)
+            sys.exit(0)
+        # If only one folder, continue with normal path; otherwise run sequential uploads
+        if len(folders_to_upload) == 1:
+            effective_folder = folders_to_upload[0]
+        else:
+            # Ensure requests is available once
+            if requests is None and not ensure_requests_available():
+                print('[ERROR] requests library missing and auto-install failed.', flush=True)
+                sys.exit(2)
+            # Optional validation
+            if not args.skip_validate:
+                try:
+                    url = f"https://api.telegram.org/bot{args.token.strip()}/getMe"
+                    ok = False
+                    try:
+                        if requests is not None:
+                            r = requests.get(url, timeout=10)
+                            j = r.json()
+                            ok = bool(j.get('ok')) if isinstance(j, dict) else False
+                        else:
+                            with urllib.request.urlopen(url, timeout=10) as r:
+                                j = json.loads(r.read().decode('utf-8'))
+                                ok = bool(j.get('ok')) if isinstance(j, dict) else False
+                    except Exception as ve:
+                        print(f"[WARN] validate_token failed: {ve}", flush=True)
+                    if not ok:
+                        print('[ERROR] Invalid bot token (use --skip-validate to bypass).', flush=True)
+                        sys.exit(3)
+                except Exception:
+                    pass
+            def run_one(folder_path: str) -> bool:
+                folder = Path(folder_path).expanduser()
+                if not folder.exists() or not folder.is_dir():
+                    print('[ERROR] Folder not found or not a directory:', folder, flush=True)
+                    return False
+                stop_event = threading.Event()
+                def headless_progress(sent, total, eta):
+                    try:
+                        event = {
+                            'type': 'progress',
+                            'sent': int(sent),
+                            'total': int(total) if total else 0,
+                            'eta_seconds': float(eta) if eta is not None else None,
+                            'timestamp': time.time()
+                        }
+                        print(json.dumps(event), flush=True)
+                    except Exception:
+                        pass
+                def headless_log(msg: str):
+                    try:
+                        ts = time.strftime('%Y-%m-%d %H:%M:%S')
+                        print(f'[{ts}] {msg}', flush=True)
+                    except Exception:
+                        pass
+                def headless_done(success: bool):
+                    try:
+                        ev = {'type': 'done', 'success': bool(success), 'timestamp': time.time()}
+                        print(json.dumps(ev), flush=True)
+                    except Exception:
+                        pass
+                worker = UploadWorker(
+                    folder=folder,
+                    token=args.token.strip(),
+                    chat_id=args.channel.strip(),
+                    as_document=bool(args.as_document),
+                    no_album=bool(args.no_album),
+                    delay=float(args.delay),
+                    jitter=float(args.jitter),
+                    resume=bool(args.resume),
+                    delete_after_upload=bool(args.move_after),
+                    max_workers=max(1, min(10, int(args.workers))),
+                    progress_callback=headless_progress,
+                    log_callback=headless_log,
+                    done_callback=headless_done,
+                    stop_event=stop_event,
+                    include_link=bool(args.include_link) or bool(args.link),
+                    channel_link=(args.link or '').strip(),
+                    use_custom_caption=bool(args.use_custom_caption),
+                    custom_caption=(args.custom_caption or '').strip()
+                )
+                headless_log(f'Starting upload: {folder}')
+                worker.start()
+                try:
+                    while worker.is_alive():
+                        worker.join(timeout=0.25)
+                except KeyboardInterrupt:
+                    stop_event.set()
+                    headless_log('Stop requested (KeyboardInterrupt). Waiting for worker to finish...')
+                    while worker.is_alive():
+                        worker.join(timeout=0.25)
+                return True
+            # Run sequentially for each fetched folder; sleep 30s between users
+            for idx, f in enumerate(folders_to_upload):
+                run_one(f)
+                if idx < len(folders_to_upload) - 1:
+                    print('[INFO] Sleeping 30s before next username...', flush=True)
+                    try:
+                        time.sleep(30)
+                    except Exception:
+                        pass
+            sys.exit(0)
+
+    if effective_folder and args.token and args.channel:
         # Ensure requests
         if requests is None:
             if not ensure_requests_available():
@@ -2787,7 +3275,7 @@ if __name__ == '__main__':
             except Exception:
                 pass
 
-        folder = Path(args.folder).expanduser()
+        folder = Path(effective_folder).expanduser()
         if not folder.exists() or not folder.is_dir():
             print('[ERROR] Folder not found or not a directory:', folder, flush=True)
             sys.exit(4)

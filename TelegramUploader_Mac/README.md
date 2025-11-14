@@ -12,6 +12,26 @@ Overview
 - `build_mac_app.sh` — Build script that compiles the SwiftUI launcher, copies the Python
   script into the bundle, and creates a `.dmg` (requires Xcode command-line tools).
 
+Variants: Full vs Lite
+
+The build now supports two variants:
+
+- Full: Bundles the optional `instaloader` package inside the app’s embedded venv for offline Instagram fetch.
+- Lite: Excludes `instaloader` to keep the app smaller. Instagram features will prompt to install or guide you to set it up.
+
+Use the build script like this:
+
+```bash
+# Build both variants (default)
+./build_mac_app.sh
+
+# Build only the full variant (with instaloader bundled)
+./build_mac_app.sh full
+
+# Build only the lite variant (no instaloader bundled)
+./build_mac_app.sh lite
+```
+
 Bundled Python runtime
 
 The build script now creates an embedded Python virtual environment under:
@@ -41,13 +61,13 @@ How to build (on macOS)
 
    xcode-select --install
 
-2. From this directory run:
+2. From this directory run (builds both variants by default):
 
 ```bash
 ./build_mac_app.sh
 ```
 
-3. The script will produce `TelegramUploader.app` in this folder (and `TelegramUploader.dmg` when `hdiutil` is present).
+3. The script will produce `TelegramUploader.app` and `TelegramUploader-Lite.app` in this folder (and corresponding `.dmg`s when `hdiutil` is present).
 4. Open the app and either:
   - Click "Open Tk GUI" to use the full Python UI, or
   - Fill the fields (Folder, Token, Channel, options) and click "Start Upload" to run headless.
