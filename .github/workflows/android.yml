@@ -1,10 +1,27 @@
-name: Android CI
+name: Android CI (scoped)
 
 on:
   push:
     branches: [ "main" ]
+    paths:
+      - 'android/**'
+      - '**/*.gradle*'
+      - 'gradle/**'
+      - 'build.gradle'
+      - 'build.gradle.kts'
+      - 'settings.gradle'
+      - 'settings.gradle.kts'
   pull_request:
     branches: [ "main" ]
+    paths:
+      - 'android/**'
+      - '**/*.gradle*'
+      - 'gradle/**'
+      - 'build.gradle'
+      - 'build.gradle.kts'
+      - 'settings.gradle'
+      - 'settings.gradle.kts'
+  workflow_dispatch:
 
 jobs:
   build:
